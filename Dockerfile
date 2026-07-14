@@ -82,6 +82,10 @@ WORKDIR /home/agent
 RUN curl -fsSL https://herdr.dev/install.sh | sh
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/agent/.local/bin:${PATH}"
+# Debian's zsh package seeds a skeleton ~/.zshrc via /etc/skel, which makes
+# run_once_bootstrap.sh think there's an existing config to merge and prompt
+# interactively (with no stdin, that prompt aborts the build). Remove it first.
+RUN rm -f /home/agent/.zshrc
 RUN chezmoi init --apply kris-steinhoff/dotfiles
 
 USER root

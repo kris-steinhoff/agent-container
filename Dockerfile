@@ -42,8 +42,9 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
     && version=$(curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest | grep -oP '"tag_name":\s*"\K[^"]+') \
     && curl -fsSLo /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/${version}/downloads/glab_${version#v}_linux_${arch}.tar.gz" \
-    && tar -C /usr/local/bin -xzf /tmp/glab.tar.gz glab \
-    && rm /tmp/glab.tar.gz
+    && tar -C /tmp -xzf /tmp/glab.tar.gz bin/glab \
+    && mv /tmp/bin/glab /usr/local/bin/glab \
+    && rm -rf /tmp/glab.tar.gz /tmp/bin
 
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.

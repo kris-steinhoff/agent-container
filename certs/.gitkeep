@@ -1,0 +1,5 @@
+# Drop corporate TLS-inspection root CA(s) here as *.crt (PEM) to have the
+# container trust them, e.g.:
+#   cp /path/to/corp-root-ca.pem certs/corp.crt
+# Real certs are gitignored. Empty otherwise — the build's
+# update-ca-certificates step is then a no-op.

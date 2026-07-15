@@ -39,12 +39,27 @@ is processed in place and `ssh_config` uses first-match-wins:
 
 ```
 # ~/.ssh/config
-Include ~/code/github.com/kris-steinhoff/agent-container/ssh_config
+Include ~/.config/kris-steinhoff/agent-container/ssh_config
 ```
 
 `ForwardAgent yes` in that entry lets git inside the container use your
 host's ssh-agent for clone/push over SSH, without ever putting a private key
 in the image.
+
+## Behind a TLS-inspecting proxy
+
+Corporate proxies that re-sign HTTPS with a private root CA break every
+`curl`/`apt`/`npm`/`git` fetch in the build (and `claude`/`opencode` at
+runtime), since the container doesn't trust that root. Drop the root (or
+bundle) into `certs/` as a `*.crt` (PEM) file and the build adds it to the
+container trust store:
+
+```sh
+cp /path/to/corp-root-ca.pem certs/corp.crt
+```
+
+`certs/` ships empty, so this is a no-op off-network. Real certs are
+gitignored and stay out of the repo.
 
 ## Build and run
 

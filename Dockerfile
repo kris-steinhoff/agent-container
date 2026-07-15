@@ -1,5 +1,8 @@
 FROM node:24-trixie-slim
 
+# node:24-trixie-slim doesn't ship the ca-certificates package, so
+# update-ca-certificates doesn't exist yet — install it (and everything else)
+# before touching the trust store below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
@@ -27,6 +30,18 @@ RUN apt-get update \
 
 ENV LANG=en_US.UTF-8
 
+# Corporate TLS-inspecting proxies (Zscaler, Netskope, etc.) re-sign HTTPS with
+# a private root CA the container doesn't trust, so every curl/npm/git fetch
+# below fails cert verification. Drop that root (or bundle) as one or more
+# *.crt files into ./certs/ and it gets added to the trust store here, before
+# any of the curl-based installs further down.
+# ./certs/ ships empty (just .gitkeep), so off-corp-network builds are a no-op.
+# NODE_EXTRA_CA_CERTS makes node/npm honor it too — node ignores the system
+# store otherwise, at build time and for claude/opencode at runtime.
+COPY certs/ /usr/local/share/ca-certificates/extra/
+RUN update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+
 # Debian's apt doesn't carry gh; pull from GitHub's own apt repo per its
 # official install docs (https://github.com/cli/cli/blob/trunk/docs/install_linux.md).
 RUN mkdir -p -m 755 /etc/apt/keyrings \
@@ -36,15 +51,6 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
-
-# Unlike gh, glab has no official apt repo and isn't packaged in Debian, so
-# resolve the latest tag via GitLab's API and pull the release tarball directly.
-RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
-    && version=$(curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest | grep -oP '"tag_name":\s*"\K[^"]+') \
-    && curl -fsSLo /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/${version}/downloads/glab_${version#v}_linux_${arch}.tar.gz" \
-    && tar -C /tmp -xzf /tmp/glab.tar.gz bin/glab \
-    && mv /tmp/bin/glab /usr/local/bin/glab \
-    && rm -rf /tmp/glab.tar.gz /tmp/bin
 
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.
@@ -82,9 +88,9 @@ WORKDIR /home/agent
 RUN curl -fsSL https://herdr.dev/install.sh | sh
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/agent/.local/bin:${PATH}"
-# Debian's zsh package seeds a skeleton ~/.zshrc via /etc/skel, which makes
-# run_once_bootstrap.sh think there's an existing config to merge and prompt
-# interactively (with no stdin, that prompt aborts the build). Remove it first.
+# The uv installer above writes a fresh ~/.zshrc to wire up its PATH shim;
+# drop it so chezmoi's bootstrap can lay one down without prompting
+# interactively (PATH is already set via ENV, so nothing is lost).
 RUN rm -f /home/agent/.zshrc
 RUN chezmoi init --apply kris-steinhoff/dotfiles
 

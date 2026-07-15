@@ -52,6 +52,17 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# GitLab's glab isn't in Debian/apt either. It ships pre-built release tarballs
+# on gitlab.com; resolve the latest tag via the API and pull the matching arch
+# binary (bin/glab inside the tarball). uname -m for the same reason as nvim below.
+RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
+    && tag=$(curl -fsSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest" | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4) \
+    && ver=${tag#v} \
+    && curl -fsSLo /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/${tag}/downloads/glab_${ver}_linux_${arch}.tar.gz" \
+    && tar -C /tmp -xzf /tmp/glab.tar.gz \
+    && mv /tmp/bin/glab /usr/local/bin/glab \
+    && rm -rf /tmp/glab.tar.gz /tmp/bin
+
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.
 # uname -m (not TARGETARCH) since that ARG only gets auto-populated by

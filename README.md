@@ -5,7 +5,7 @@ the host, attached to with [herdr](https://herdr.dev) over SSH. Runs locally
 for now; moving it to a remote host later is a matter of changing the SSH
 target, not the image.
 
-Ships: `claude`, `opencode`, `neovim` (latest release), `gh`, `uv`, `chezmoi`
+Ships: `claude`, `opencode`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi`
 (applies this dotfiles repo on build), and `sshd` so herdr can attach to a
 persistent session inside the container.
 
@@ -85,6 +85,7 @@ Not baked into the image. Either:
 
 `gh` needs its own login too — `gh auth login` inside the container (persists
 in `agent_home`), separate from the `ForwardAgent`-based git-over-SSH access.
+`glab` is the same story — `glab auth login` for GitLab access.
 
 ## Persistence
 

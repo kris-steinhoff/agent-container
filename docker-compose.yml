@@ -16,8 +16,8 @@ services:
       # in agent_home and disappears if that volume is removed.
       # - ~/code/github.com/kris-steinhoff/some-project:/home/agent/workspace/some-project
     environment:
-      - ANTHROPIC_API_KEY
-      - OPENCODE_API_KEY
+      - GITHUB_TOKEN
+      - GITLAB_TOKEN
 
 volumes:
   ssh_host_keys:

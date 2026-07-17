@@ -85,7 +85,7 @@ RUN BINDIR=/usr/local/bin sh -c "$(curl -fsLS get.chezmoi.io)"
 
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 
-RUN npm install -g @anthropic-ai/claude-code opencode-ai tree-sitter-cli \
+RUN npm install -g @anthropic-ai/claude-code opencode-ai tree-sitter-cli @github/copilot \
     && npm cache clean --force
 
 RUN useradd -m -s /usr/bin/zsh agent \

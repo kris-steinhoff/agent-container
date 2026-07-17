@@ -21,6 +21,8 @@ RUN apt-get update \
         xz-utils \
         build-essential \
         python3 \
+        python3-venv \
+        python3-pip \
         locales \
         tini \
     && rm -rf /var/lib/apt/lists/* \
@@ -41,6 +43,11 @@ ENV LANG=en_US.UTF-8
 COPY certs/ /usr/local/share/ca-certificates/extra/
 RUN update-ca-certificates
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+# pip ships its own CA bundle (certifi) and ignores the system trust store, so
+# Mason's PyPI installs (ruff, ty) fail TLS on a MITM network unless pointed at
+# the system bundle. No-op off-corp — it's the standard bundle either way.
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 # Debian's apt doesn't carry gh; pull from GitHub's own apt repo per its
 # official install docs (https://github.com/cli/cli/blob/trunk/docs/install_linux.md).

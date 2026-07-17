@@ -5,7 +5,7 @@ the host, attached to with [herdr](https://herdr.dev) over SSH. Runs locally
 for now; moving it to a remote host later is a matter of changing the SSH
 target, not the image.
 
-Ships: `claude`, `opencode`, `copilot`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi`
+Ships: `claude`, `opencode`, `copilot`, `codex`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi`
 (applies this dotfiles repo on build), and `sshd` so herdr can attach to a
 persistent session inside the container.
 

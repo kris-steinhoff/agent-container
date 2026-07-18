@@ -3,7 +3,8 @@ services:
     build: .
     image: agent-container
     ports:
-      - "2222:22"
+      - "127.0.0.1:2222:22"
+      - "127.0.0.1:8000:8000"
     extra_hosts:
       # Colima's host.docker.internal support has version-dependent quirks;
       # this makes it explicit rather than relying on the VM defaults.

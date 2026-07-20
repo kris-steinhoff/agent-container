@@ -71,6 +71,16 @@ RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
     && mv /tmp/bin/glab /usr/local/bin/glab \
     && rm -rf /tmp/glab.tar.gz /tmp/bin
 
+# Terraform isn't in Debian/apt, and HashiCorp's apt repo doesn't reliably carry
+# a trixie release. HashiCorp ships per-version zip binaries; resolve the latest
+# stable via the checkpoint API and pull the matching arch (single `terraform`
+# binary inside the zip). uname -m for the same reason as nvim below.
+RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
+    && ver=$(curl -fsSL https://checkpoint-api.hashicorp.com/v1/check/terraform | grep -o '"current_version":"[^"]*"' | head -1 | cut -d'"' -f4) \
+    && curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${ver}/terraform_${ver}_linux_${arch}.zip" \
+    && unzip -d /usr/local/bin /tmp/terraform.zip \
+    && rm /tmp/terraform.zip
+
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.
 # uname -m (not TARGETARCH) since that ARG only gets auto-populated by

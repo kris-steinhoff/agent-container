@@ -20,6 +20,7 @@ RUN apt-get update \
         unzip \
         xz-utils \
         build-essential \
+        bubblewrap \
         python3 \
         python3-venv \
         python3-pip \

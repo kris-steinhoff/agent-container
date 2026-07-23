@@ -16,6 +16,7 @@ RUN apt-get update \
         fd-find \
         bat \
         fzf \
+        jq \
         less \
         unzip \
         xz-utils \

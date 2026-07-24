@@ -1,6 +1,12 @@
 services:
   agent:
-    build: .
+    build:
+      context: .
+      args:
+        # Cache gate for the fast-moving tools (see Dockerfile). Unset -> 0,
+        # which reuses the cache. The `agent-up` alias in the README exports a
+        # fresh timestamp so a plain build reinstalls claude/copilot/codex/herdr.
+        TOOLS_REFRESH: ${TOOLS_REFRESH:-0}
     image: agent-container
     ports:
       - "127.0.0.1:2222:22"

@@ -97,7 +97,9 @@ RUN BINDIR=/usr/local/bin sh -c "$(curl -fsLS get.chezmoi.io)"
 
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 
-RUN npm install -g @anthropic-ai/claude-code opencode-ai tree-sitter-cli @github/copilot @openai/codex \
+# Cached tools: kept above the cache gate near the bottom. The fast-moving
+# ones (claude, copilot, codex) install below the gate so they track latest.
+RUN npm install -g opencode-ai tree-sitter-cli \
     && npm cache clean --force
 
 RUN useradd -m -s /usr/bin/zsh agent \
@@ -110,12 +112,13 @@ COPY sshd_config /etc/ssh/sshd_config.d/agent-container.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 
-# herdr installs into the invoking user's home dir, and chezmoi apply runs
-# run_once_bootstrap.sh (which skips the brew step here since brew isn't
-# installed) to lay down dotfiles and pre-fetch the pinned nvim plugins.
+# chezmoi apply runs run_once_bootstrap.sh (which skips the brew step here
+# since brew isn't installed) to lay down dotfiles and pre-fetch the pinned
+# nvim plugins. Kept above the cache gate so that expensive plugin pre-fetch
+# stays cached. It lays down herdr's config too; herdr itself installs below
+# the gate and doesn't need to exist yet for the config to be written.
 USER agent
 WORKDIR /home/agent
-RUN curl -fsSL https://herdr.dev/install.sh | sh
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/agent/.local/bin:${PATH}"
 # The uv installer above writes a fresh ~/.zshrc to wire up its PATH shim;
@@ -124,6 +127,24 @@ ENV PATH="/home/agent/.local/bin:${PATH}"
 RUN rm -f /home/agent/.zshrc
 RUN chezmoi init --apply kris-steinhoff/dotfiles
 
+# ---------------------------------------------------------------------------
+# Cache gate. Everything ABOVE stays cached across rebuilds; everything BELOW
+# reinstalls whenever the TOOLS_REFRESH build arg changes. Docker only
+# cache-misses an ARG on its first *use* (not its declaration), so the echo
+# below is the real gate — it and every layer under it rebuild when the value
+# changes. docker-compose.yml passes a fresh timestamp by default (see the
+# agent-up alias in the README), so these fast-moving tools track latest on
+# every `--build`. Pass a fixed TOOLS_REFRESH to reuse the cache instead.
+# ---------------------------------------------------------------------------
+ARG TOOLS_REFRESH=0
+RUN echo "tools refresh token: ${TOOLS_REFRESH}"
+
+# herdr installs into the invoking user's home dir.
+RUN curl -fsSL https://herdr.dev/install.sh | sh
+
 USER root
+RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
+    && npm cache clean --force
+
 EXPOSE 22
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

@@ -69,6 +69,22 @@ docker compose up -d
 herdr --remote agent-container
 ```
 
+### Keeping the fast-moving tools current
+
+`claude`, `copilot`, `codex`, and `herdr` sit below a cache gate at the bottom
+of the Dockerfile so they can reinstall without busting the expensive base
+layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH`
+build arg: change its value and only those tools rebuild. A plain build defaults
+it to `0`, which reuses the cache. To always pull the latest of those tools,
+alias the build command to pass a fresh timestamp:
+
+```sh
+alias agent-up='TOOLS_REFRESH=$(date +%s) docker compose up -d --build'
+```
+
+Everything else (including `opencode`, `neovim`, `terraform`, `gh`, `glab`)
+stays cached until you edit the Dockerfile or build with `--no-cache`.
+
 `herdr --remote` installs herdr on the container the first time it connects
 and gives you a persistent session — detach and reattach freely, and it
 survives your local terminal closing.

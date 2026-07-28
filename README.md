@@ -6,7 +6,8 @@ for now; moving it to a remote host later is a matter of changing the SSH
 target, not the image.
 
 Ships: `claude`, `opencode`, `copilot`, `codex`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi`
-(applies this dotfiles repo on build), and `sshd` so herdr can attach to a
+(applies this dotfiles repo on build), [`beads`](https://beads.gascity.com/)
+(`bd`, an AI-supervised issue tracker), and `sshd` so herdr can attach to a
 persistent session inside the container.
 
 ## First-time setup
@@ -71,9 +72,9 @@ herdr --remote agent-container
 
 ### Keeping the fast-moving tools current
 
-`claude`, `copilot`, `codex`, and `herdr` sit below a cache gate at the bottom
-of the Dockerfile so they can reinstall without busting the expensive base
-layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH`
+`claude`, `copilot`, `codex`, `herdr`, and `bd` sit below a cache gate at the
+bottom of the Dockerfile so they can reinstall without busting the expensive
+base layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH`
 build arg: change its value and only those tools rebuild. A plain build defaults
 it to `0`, which reuses the cache. To always pull the latest of those tools,
 alias the build command to pass a fresh timestamp:

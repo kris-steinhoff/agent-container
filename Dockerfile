@@ -146,5 +146,11 @@ USER root
 RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
     && npm cache clean --force
 
+# Beads (bd): AI-supervised issue tracker CLI. No apt/npm package; the
+# installer resolves the latest release itself, so keep it below the cache
+# gate to track new versions. It installs to /usr/local/bin since that's
+# root-writable here.
+RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+
 EXPOSE 22
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

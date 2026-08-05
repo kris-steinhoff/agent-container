@@ -143,7 +143,14 @@ RUN echo "tools refresh token: ${TOOLS_REFRESH}"
 RUN curl -fsSL https://herdr.dev/install.sh | sh
 
 USER root
+# Claude Code's CLI is a platform-native binary that the npm package's
+# postinstall fetches separately. That fetch doesn't land under `npm install
+# -g` here (npm skips the optional platform-specific dependency), so `claude`
+# errors with "native binary not installed". Running install.cjs explicitly
+# pulls the binary into the package tree under /usr/local — which, unlike
+# /home/agent, isn't masked by the persistent agent_home volume at runtime.
 RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
+    && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs" \
     && npm cache clean --force
 
 # Beads (bd): AI-supervised issue tracker CLI. No apt/npm package; the

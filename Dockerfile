@@ -15,6 +15,7 @@ RUN apt-get update \
         ripgrep \
         fd-find \
         bat \
+        eza \
         fzf \
         jq \
         less \

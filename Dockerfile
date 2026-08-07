@@ -98,6 +98,10 @@ RUN BINDIR=/usr/local/bin sh -c "$(curl -fsLS get.chezmoi.io)"
 
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 
+# Debian's system pip refuses installs outside a venv (PEP 668); pre-commit
+# is a global CLI tool here, not a project dependency, so override that.
+RUN pip3 install --break-system-packages pre-commit
+
 # Cached tools: kept above the cache gate near the bottom. The fast-moving
 # ones (claude, copilot, codex) install below the gate so they track latest.
 RUN npm install -g opencode-ai tree-sitter-cli \

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+export TOOLS_REFRESH=$(date +%s)
+
+docker compose up -d --build --force-recreate

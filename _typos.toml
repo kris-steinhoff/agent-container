@@ -1,0 +1,5 @@
+[default.extend-words]
+certifi = "certifi"
+
+[default.extend-identifiers]
+HashiCorp = "HashiCorp"

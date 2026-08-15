@@ -120,7 +120,17 @@ RUN pip3 install --break-system-packages pre-commit
 RUN npm install -g opencode-ai tree-sitter-cli \
     && npm cache clean --force
 
-RUN useradd -m -s /usr/bin/zsh agent \
+# AGENT_UID: override the agent user's uid to match the host user (see
+# docker-compose.yml's AGENT_UID build arg and README.md#persistence). Files
+# written through a bind-mounted subdirectory of /home/agent show up owned
+# by the host user regardless (Colima's sshfs mount can't remap ownership),
+# so matching agent's uid to it makes that a real match instead of a
+# display-only mismatch — notably, it's what git's safe.directory ownership
+# check keys off. Left unset, useradd picks its normal default (whatever
+# uid is free — node:24-trixie-slim already reserves 1000 for its own
+# `node` user, so that's usually 1001).
+ARG AGENT_UID=
+RUN useradd -m -s /usr/bin/zsh ${AGENT_UID:+-u "$AGENT_UID"} agent \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/agent \
     && mkdir -p /home/agent/.ssh \
     && chmod 700 /home/agent/.ssh \

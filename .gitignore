@@ -2,3 +2,6 @@
 .env
 /authorized_keys
 /certs/*
+
+/docker-compose.local.yml
+/agent_code/

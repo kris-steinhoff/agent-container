@@ -7,6 +7,10 @@ services:
         # which reuses the cache. The `agent-up` alias in the README exports a
         # fresh timestamp so a plain build reinstalls claude/copilot/codex/herdr.
         TOOLS_REFRESH: ${TOOLS_REFRESH:-0}
+        # Unset by default (useradd picks its normal free uid). Set AGENT_UID
+        # in .envrc (e.g. to `$(id -u)`) to match the agent user's uid to the
+        # host — see README.md#persistence.
+        AGENT_UID: ${AGENT_UID:-}
     image: agent-container
     ports:
       - "127.0.0.1:2222:22"
@@ -17,6 +21,10 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ssh_host_keys:/etc/ssh
+      # Named volume, opaque to the host. Add a bind mount for a subdirectory
+      # (e.g. /home/agent/code) in docker-compose.local.yml if you want
+      # agent-created files to be directly reachable from the desktop — see
+      # README.md#persistence.
       - agent_home:/home/agent
       - ./authorized_keys:/run/agent-container/authorized_keys:ro
       # Mount a project in to work on it. Anything not mounted lives only

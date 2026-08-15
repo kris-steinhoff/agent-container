@@ -1,0 +1,14 @@
+# Per-machine override, not shared via git. Copy this to
+# docker-compose.local.yml (already gitignored) and adjust the path.
+#
+# Bind-mounts a subdirectory of /home/agent to a real directory on this
+# machine, alongside (not replacing) the agent_home named volume — so
+# anything an agent creates under ~/code — a drawio diagram, a screenshot,
+# whatever — is a real file you can open from the desktop, while everything
+# else (dotfiles, shell history, tool caches) stays in agent_home as normal.
+# See README.md#persistence for how to wire this file in automatically via
+# direnv.
+services:
+  agent:
+    volumes:
+      - ./agent_code:/home/agent/code

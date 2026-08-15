@@ -83,6 +83,19 @@ RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
     && unzip -d /usr/local/bin /tmp/terraform.zip \
     && rm /tmp/terraform.zip
 
+# typos-cli isn't in Debian/apt either. It ships prebuilt musl tarballs on
+# GitHub releases (bin/typos inside); resolve the latest tag via the API and
+# pull the matching arch. uname -m for the same reason as nvim below.
+# GitHub's API 403s requests with no User-Agent header, which curl doesn't
+# send by default.
+RUN arch=$(case "$(uname -m)" in aarch64) echo aarch64 ;; *) echo x86_64 ;; esac) \
+    && tag=$(curl -fsSL -H "User-Agent: agent-container" https://api.github.com/repos/crate-ci/typos/releases/latest | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4) \
+    && curl -fsSLo /tmp/typos.tar.gz "https://github.com/crate-ci/typos/releases/download/${tag}/typos-${tag}-${arch}-unknown-linux-musl.tar.gz" \
+    && mkdir -p /tmp/typos \
+    && tar -C /tmp/typos -xzf /tmp/typos.tar.gz \
+    && mv /tmp/typos/typos /usr/local/bin/typos \
+    && rm -rf /tmp/typos.tar.gz /tmp/typos
+
 # Neovim's Debian/apt build lags releases by a lot; the dotfiles' lazy-lock.json
 # and treesitter setup expect a current release, so pull the GitHub binary.
 # uname -m (not TARGETARCH) since that ARG only gets auto-populated by

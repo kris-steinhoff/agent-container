@@ -6,8 +6,7 @@ for now; moving it to a remote host later is a matter of changing the SSH
 target, not the image.
 
 Ships: `claude`, `opencode`, `copilot`, `codex`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi`
-(applies this dotfiles repo on build), [`beads`](https://beads.gascity.com/)
-(`bd`, an AI-supervised issue tracker), and `sshd` so herdr can attach to a
+(applies this dotfiles repo on build), and `sshd` so herdr can attach to a
 persistent session inside the container.
 
 ## First-time setup

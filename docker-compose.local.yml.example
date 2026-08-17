@@ -1,14 +1,17 @@
 # Per-machine override, not shared via git. Copy this to
 # docker-compose.local.yml (already gitignored) and adjust the path.
 #
-# Bind-mounts a subdirectory of /home/agent to a real directory on this
-# machine, alongside (not replacing) the agent_home named volume — so
-# anything an agent creates under ~/code — a drawio diagram, a screenshot,
-# whatever — is a real file you can open from the desktop, while everything
-# else (dotfiles, shell history, tool caches) stays in agent_home as normal.
-# See README.md#persistence for how to wire this file in automatically via
-# direnv.
+# Bind-mounts a shared scratch directory at /home/agent/scratch, alongside
+# (not replacing) the agent_home named volume — a handoff space where an
+# agent can leave a draft artifact (a drawio diagram, a screenshot, a
+# document for review) as a real file you can open from the desktop, and
+# where you can leave one for the agent. Everything else (dotfiles, shell
+# history, tool caches, project checkouts) stays in agent_home as normal.
+#
+# Any absolute path works; ./agent_scratch (next to the repo) is gitignored.
+# See README.md#shared-scratch-directory for how to wire this file in
+# automatically via direnv, and why AGENT_UID matters here.
 services:
   agent:
     volumes:
-      - ./agent_code:/home/agent/code
+      - ./agent_scratch:/home/agent/scratch

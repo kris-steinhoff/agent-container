@@ -121,12 +121,12 @@ RUN npm install -g opencode-ai tree-sitter-cli \
     && npm cache clean --force
 
 # AGENT_UID: override the agent user's uid to match the host user (see
-# docker-compose.yml's AGENT_UID build arg and README.md#persistence). Files
-# written through a bind-mounted subdirectory of /home/agent show up owned
-# by the host user regardless (Colima's sshfs mount can't remap ownership),
-# so matching agent's uid to it makes that a real match instead of a
-# display-only mismatch — notably, it's what git's safe.directory ownership
-# check keys off. Left unset, useradd picks its normal default (whatever
+# docker-compose.yml's AGENT_UID build arg and
+# README.md#shared-scratch-directory). Files in the bind-mounted scratch
+# directory carry real host ownership in both directions (Colima's sshfs
+# mount can't remap ownership), so unless the uids match, each side can read
+# but not write what the other left there. Left unset, useradd picks its
+# normal default (whatever
 # uid is free — node:24-trixie-slim already reserves 1000 for its own
 # `node` user, so that's usually 1001).
 ARG AGENT_UID=

@@ -9,7 +9,8 @@ services:
         TOOLS_REFRESH: ${TOOLS_REFRESH:-0}
         # Unset by default (useradd picks its normal free uid). Set AGENT_UID
         # in .envrc (e.g. to `$(id -u)`) to match the agent user's uid to the
-        # host — see README.md#persistence.
+        # host, so both sides can write files in the shared scratch directory
+        # — see README.md#shared-scratch-directory.
         AGENT_UID: ${AGENT_UID:-}
     image: agent-container
     ports:
@@ -21,10 +22,9 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ssh_host_keys:/etc/ssh
-      # Named volume, opaque to the host. Add a bind mount for a subdirectory
-      # (e.g. /home/agent/code) in docker-compose.local.yml if you want
-      # agent-created files to be directly reachable from the desktop — see
-      # README.md#persistence.
+      # Named volume, opaque to the host. docker-compose.local.yml adds a
+      # bind mount at /home/agent/scratch for handing files back and forth
+      # with the desktop — see README.md#shared-scratch-directory.
       - agent_home:/home/agent
       - ./authorized_keys:/run/agent-container/authorized_keys:ro
       # Mount a project in to work on it. Anything not mounted lives only

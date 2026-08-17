@@ -70,17 +70,21 @@ Not baked into the image. Either:
 
 ## Persistence
 
-`agent_home` is a named volume mounted at `/home/agent` — it's seeded from the image on first start (dotfiles, herdr, nvim plugins already installed) and then persists auth tokens, shell history, and anything else you don't mount separately across `docker compose restart`/`down`+`up`. `docker compose down -v` deletes it. Being a named volume, it's opaque to the host — there's no path on the Mac side to open a file an agent created in there.
+`agent_home` is a named volume mounted at `/home/agent` — it's seeded from the image on first start (dotfiles, herdr, nvim plugins already installed) and then persists auth tokens, shell history, project checkouts, and anything else you don't mount separately across `docker compose restart`/`down`+`up`. `docker compose down -v` deletes it. Being a named volume, it's opaque to the host — there's no path on the Mac side to open a file an agent created in there. The shared scratch directory below is the escape hatch for that.
 
 `ssh_host_keys` persists the sshd host keys across rebuilds so your local `known_hosts` doesn't need updating every time you rebuild the image.
 
 To work on a project, bind-mount it in — see the commented example in `docker-compose.yml`. Anything not mounted only exists in `agent_home`.
 
-### Bind-mounting `/home/agent/code`
+### Shared scratch directory
 
-If an agent needs to hand you something you can open directly — a drawio diagram, a screenshot, any artifact you want in a normal Finder/editor path — bind-mount a subdirectory to a real directory on the host, alongside (not replacing) `agent_home`. Dotfiles, shell history, and tool caches stay in the named volume as normal; only what lives under `/home/agent/code` becomes a real path on the Mac. This is a per-machine choice (the path only makes sense on the machine it points at), so it's wired up through two gitignored files rather than edited into `docker-compose.yml` directly:
+A named volume has no path on the Mac side, so anything an agent leaves in its home directory is unreachable from Finder or a desktop editor. A small bind-mounted scratch directory fixes that in both directions: an agent drops a draft artifact — a drawio diagram, a screenshot, a document for review — into `~/scratch` inside the container and it's a real file on the Mac, and anything you drop in from the Mac side is immediately readable by the agent. Everything else (dotfiles, shell history, tool caches, project checkouts) stays in `agent_home` as normal.
 
-- **`docker-compose.local.yml`** — a compose override, merged in on top of `docker-compose.yml`. Copy the tracked template and adjust the path if you don't want it next to the repo:
+Treat it as a handoff space, not storage. It sits outside `agent_home`, so `docker compose down -v` won't take it with the volume, but nothing backs it up or versions it either.
+
+The host path only makes sense on the machine it points at, so it's wired up through two gitignored files rather than edited into `docker-compose.yml` directly:
+
+- **`docker-compose.local.yml`** — a compose override, merged in on top of `docker-compose.yml`. Copy the tracked template and point the source at wherever you want the directory on the Mac:
 
   ```sh
   cp docker-compose.local.yml.example docker-compose.local.yml
@@ -88,7 +92,7 @@ If an agent needs to hand you something you can open directly — a drawio diagr
 
   Compose adds this as a second, independent mount (different target path from `agent_home`'s `/home/agent`) — nothing else in `docker-compose.yml` needs to change.
 
-- **`.envrc`** ([direnv](https://direnv.net/)) — so `docker compose` picks `docker-compose.local.yml` up automatically instead of needing `-f` on every invocation. Copy the tracked template (it also sets `AGENT_UID`, covered below — harmless to leave in even if you skip that part):
+- **`.envrc`** ([direnv](https://direnv.net/)) — so `docker compose` picks `docker-compose.local.yml` up automatically instead of needing `-f` on every invocation. Copy the tracked template (it also sets `AGENT_UID`, covered below):
 
   ```sh
   cp .envrc.example .envrc
@@ -96,54 +100,17 @@ If an agent needs to hand you something you can open directly — a drawio diagr
 
   Run `direnv allow` once after creating it.
 
-#### Migrating existing `/home/agent/code` content
-
-Skip this if you've never put anything at `/home/agent/code` — just create the empty local directory and move on. Otherwise, do this before switching `.envrc`/`docker-compose.local.yml` on, so `docker compose` here still resolves against the named-volume config:
+Create the host directory yourself before the first `up`, rather than letting Docker create the missing mount source for you — that way it lands owned by your Mac user with a mode you chose:
 
 ```sh
-docker compose down                 # stops the container, keeps the volume
-mkdir -p ./agent_code               # or wherever docker-compose.local.yml points
-vol=$(docker compose config --format json | jq -r '.volumes.agent_home.name')
-
-docker run --rm \
-  -v "$vol":/from \
-  -v "$PWD/agent_code":/to \
-  alpine sh -c '
-    [ -d /from/code ] || exit 0
-    apk add --no-cache rsync >/dev/null
-    rsync -rlD --no-perms --no-owner --no-group --no-times \
-      --size-only --partial --info=progress2 \
-      /from/code/ /to/
-  '
+mkdir -p ~/Scratch
 ```
 
-`rsync`, not `cp`, on purpose: it writes each file to a temp name and `rename()`s it over the target instead of reopening the destination file in place, so it never collides with git's read-only pack/loose-object files (`444`) the way `cp` does — no permission errors, no need to clean the target between attempts. `--no-perms --no-owner --no-group --no-times` skips metadata Colima's `sshfs` mount can't honor anyway (it proxies the write as your Mac user, which can't `chown` to an arbitrary uid, and its FUSE layer can't set an mtime on a symlink without following it) — new files just land with a normal writable mode. `--size-only` makes reruns cheap (skips the checksum pass on files already there — fine since the source, a stopped volume, isn't changing mid-migration), and `--partial` keeps interrupted transfers instead of discarding them. Safe to just re-run as many times as needed with no cleanup in between.
+#### Matching `agent`'s uid to the host
 
-Sanity check afterward — should come back empty (no symlinks pointing at a missing target). GNU `find` has `-xtype l` for this; macOS's `find` doesn't, so:
+Files under the scratch mount carry real host ownership in both directions: Colima's `sshfs` mount reports the host's uid regardless of which uid the writing process inside the container had, and doesn't remap it either way. So if `agent`'s uid doesn't match your Mac user's, each side sees the other's files as owned by a stranger — readable at the usual `644`, but not writable — which defeats the point of a shared directory. `agent`'s uid is set at build time via the `AGENT_UID` build arg (`Dockerfile`, `docker-compose.yml`); `.envrc.example` already sets it (`export AGENT_UID=$(id -u)`) alongside `COMPOSE_FILE`, so there's nothing more to add if you copied it above.
 
-```sh
-find ./agent_code -type l ! -exec test -e {} \; -print
-```
-
-A hit here isn't necessarily a problem — check it against the source before assuming the copy dropped something. Some symlinks are expected to resolve "broken" when inspected from the Mac (a venv's `bin/python` pointing at an absolute in-container path like `/usr/bin/python3.13`, for instance) and will work fine once mounted back into the container. Others may just be pre-existing dangling symlinks that were already broken in the source — check with `docker run --rm -v "$vol":/vol alpine ls -la /vol/code/path/to/parent/dir`.
-
-Once the copy looks right, bring the container up (below) — the bind mount fully shadows whatever's still under `code/` inside the volume, so the container never sees it either way. Reclaiming that space by deleting it from the volume is optional and can happen anytime later, not part of this sequence:
-
-```sh
-docker run --rm -v "$vol":/vol alpine rm -rf /vol/code
-```
-
-#### Matching `agent`'s uid to the host (optional)
-
-Files written through the bind mount show up owned by your Mac user's uid, not `agent`'s — Colima's `sshfs` mount reports real host ownership regardless of which uid the writing process inside the container had (see above). Mostly cosmetic, but it's exactly what git's `safe.directory` ownership check keys off, so every `git` command in every repo under `~/code` will refuse to run with "detected dubious ownership" until either git's told to trust it:
-
-```sh
-git config --global --add safe.directory '*'
-```
-
-or `agent`'s uid is changed to genuinely match, via the `AGENT_UID` build arg (`Dockerfile`, `docker-compose.yml`). `.envrc.example` already sets it (`export AGENT_UID=$(id -u)`) alongside `COMPOSE_FILE` — nothing more to add if you copied it above.
-
-`agent_home`, unlike `code/`, is a real Docker volume with real POSIX permissions enforced (no `sshfs` involved) — so changing `agent`'s uid on rebuild leaves everything already in there (dotfiles, `.ssh`, shell history, caches) owned by the _old_ uid, unreadable/unwritable by the new one, unless it's rechowned first. One-time, before rebuilding:
+`agent_home`, unlike the scratch mount, is a real Docker volume with real POSIX permissions enforced (no `sshfs` involved) — so changing `agent`'s uid on rebuild leaves everything already in there (dotfiles, `.ssh`, shell history, caches) owned by the _old_ uid, unreadable/unwritable by the new one, unless it's rechowned first. One-time, before rebuilding:
 
 ```sh
 echo "AGENT_UID=$AGENT_UID"   # confirm it's actually set — see warning below
@@ -163,7 +130,36 @@ direnv allow
 docker compose up -d --build
 ```
 
-Confirm things look right — ssh in, `id` should show `agent`'s uid matching `$(id -u)` on the host if you set `AGENT_UID`, `ls -la ~` should show `agent` as owner throughout rather than a bare number, and `git status` in one of the repos under `~/code` should just work.
+Confirm things look right — ssh in, `id` should show `agent`'s uid matching `$(id -u)` on the host if you set `AGENT_UID`, `ls -la ~` should show `agent` as owner throughout rather than a bare number, and `~/scratch` should be owned by `agent` too. Write a file into it from each side and check the other side can edit it.
+
+#### Migrating back from a bind-mounted `/home/agent/code`
+
+Only relevant if you followed an earlier version of this README and bind-mounted `/home/agent/code` to a host directory. The scratch directory replaces that arrangement: project checkouts go back to living in `agent_home`, where they get real POSIX ownership and no `sshfs` in the path (which is also what git's `safe.directory` ownership check wants). Move the content back into the volume with the container down, before you switch `docker-compose.local.yml` over to the scratch mount:
+
+```sh
+docker compose down                 # stops the container, keeps the volume
+vol=$(docker compose config --format json | jq -r '.volumes.agent_home.name')
+src=~/Code/Agent                    # whatever docker-compose.local.yml points at
+
+docker run --rm \
+  -v "$src":/from \
+  -v "$vol":/to \
+  alpine sh -c '
+    apk add --no-cache rsync >/dev/null
+    mkdir -p /to/code
+    rsync -a --partial --info=progress2 /from/ /to/code/
+  '
+```
+
+`rsync`, not `cp`, on purpose: it writes each file to a temp name and `rename()`s it over the target instead of reopening the destination file in place, so it never collides with git's read-only pack/loose-object files (`444`) the way `cp` does — no permission errors, no need to clean the target between attempts. `--partial` keeps interrupted transfers instead of discarding them, and the default size+mtime comparison skips what's already there, so this is safe to re-run as many times as needed with no cleanup in between. The destination is a real volume this time (not `sshfs`), so full `-a` metadata preservation works and the earlier `--no-perms`/`--no-owner`/`--no-times` workarounds aren't needed.
+
+Everything lands owned by whoever `rsync` ran as, so hand it to `agent`. Running the `chown` from this project's own image rather than `alpine` gets the uid right whether or not you set `AGENT_UID`, since the image already has the `agent` user:
+
+```sh
+docker run --rm -v "$vol":/vol --entrypoint sh agent-container -c 'chown -R agent:agent /vol/code'
+```
+
+Now switch `docker-compose.local.yml` from the `code` mount to the scratch mount, bring the container up, and check `~/code` from inside before deleting anything on the host side — `git status` in a repo or two is the quick version.
 
 ## Using a local model (LM Studio, etc.)
 

@@ -4,4 +4,4 @@
 /certs/*
 
 /docker-compose.local.yml
-/agent_code/
+/agent_scratch/

@@ -13,6 +13,7 @@ services:
         # — see README.md#shared-scratch-directory.
         AGENT_UID: ${AGENT_UID:-}
     image: agent-container
+    hostname: agent-container
     ports:
       - "127.0.0.1:2222:22"
       - "127.0.0.1:8000:8000"

@@ -161,6 +161,20 @@ docker run --rm -v "$vol":/vol --entrypoint sh agent-container -c 'chown -R agen
 
 Now switch `docker-compose.local.yml` from the `code` mount to the scratch mount, bring the container up, and check `~/code` from inside before deleting anything on the host side — `git status` in a repo or two is the quick version.
 
+### Docker access
+
+The container ships the `docker` CLI but no daemon — bind-mount the docker socket in via `docker-compose.local.yml` (see the commented line in `docker-compose.local.yml.example`) to let the agent run containers against Colima's (or Docker Desktop's) daemon directly:
+
+```sh
+- /var/run/docker.sock:/var/run/docker.sock
+```
+
+Use that plain path, not `~/.colima/default/docker.sock` — despite `docker context inspect` showing the latter as `Endpoints.docker.Host` for the Mac-side `docker` CLI, it's a macOS-side proxy Colima forwards over SSH, not the real socket. This project's containers are created by the dockerd _inside_ the Colima VM, and Docker resolves bind-mount sources against that daemon's own filesystem — so `/var/run/docker.sock` reaches the VM's native socket directly, while the `~/.colima/...` path gets proxied through a virtiofs share first. Unix domain sockets don't survive that hop (the file shows up with correct type bits — `ls`/`chmod` succeed — but `connect()` fails with "Cannot connect to the Docker daemon", even with Colima running, since the real listener lives in macOS's kernel, not the VM's).
+
+This is a significant capability grant: anyone with a shell in the container gets full control of that docker daemon, equivalent to root on the Colima VM (or your Mac, on Docker Desktop) — it can mount arbitrary host paths into new containers, not just run existing ones. `agent` already has passwordless sudo inside the container, so this doesn't add a new trust boundary _inside_ the container, but it does extend the container's reach out to the host daemon. Skip it if that's more access than you want the agent to have.
+
+`entrypoint.sh` `chmod`s the socket to `666` on container start (it arrives owned by whatever uid/gid the host side has, which `agent` isn't in) — since it's a bind mount, not a copy, this changes the permissions on the host-side socket too, not just inside the container.
+
 ## Using a local model (LM Studio, etc.)
 
 In LM Studio, Developer tab → Server Settings → enable "Serve on Local Network" (it binds `127.0.0.1` by default, which the container can't reach at all — note LM Studio's server has no auth by default, so this exposes it to your whole LAN, not just the container). Note the port (default `1234`).

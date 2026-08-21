@@ -15,4 +15,13 @@ if [ -f /run/agent-container/authorized_keys ]; then
     chmod 600 /home/agent/.ssh/authorized_keys
 fi
 
+# If docker-compose.local.yml bind-mounts the host's docker.sock in (see
+# docker-compose.local.yml.example), it arrives owned by whatever uid/gid the
+# host-side socket has, which `agent` doesn't belong to. chmod (not chown —
+# this is a bind mount, so it changes the host-side socket's mode too) so
+# `agent` can use `docker` without sudo.
+if [ -S /var/run/docker.sock ]; then
+    chmod 666 /var/run/docker.sock
+fi
+
 exec /usr/sbin/sshd -D -e

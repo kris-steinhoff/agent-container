@@ -73,6 +73,19 @@ RUN arch=$(case "$(uname -m)" in aarch64) echo arm64 ;; *) echo amd64 ;; esac) \
     && mv /tmp/bin/glab /usr/local/bin/glab \
     && rm -rf /tmp/glab.tar.gz /tmp/bin
 
+# Docker's own apt repo, not Debian's docker.io package: docker.io bundles
+# dockerd/containerd and their systemd unit postinst hooks, which don't apply
+# here since only the CLI talks to the docker.sock bind-mounted in from the
+# host (see docker-compose.local.yml.example) — docker-ce-cli ships just the
+# client binary.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
 # Terraform isn't in Debian/apt, and HashiCorp's apt repo doesn't reliably carry
 # a trixie release. HashiCorp ships per-version zip binaries; resolve the latest
 # stable via the checkpoint API and pull the matching arch (single `terraform`

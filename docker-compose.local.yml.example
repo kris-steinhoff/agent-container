@@ -11,7 +11,25 @@
 # Any absolute path works; ./agent_scratch (next to the repo) is gitignored.
 # See README.md#shared-scratch-directory for how to wire this file in
 # automatically via direnv, and why AGENT_UID matters here.
+#
+# The docker.sock mount below gives the container's `agent` user (who
+# already has passwordless sudo) full control of the host docker daemon —
+# see README.md#docker-access before enabling it. Use the plain
+# /var/run/docker.sock path below, NOT ~/.colima/default/docker.sock — that
+# one looks tempting (it's what `docker context inspect` shows as
+# Endpoints.docker.Host on the Mac) but it's a macOS-side proxy Colima
+# forwards over SSH for the host `docker` CLI, not the real socket. This
+# project's containers are created by the dockerd *inside* the Colima VM, and
+# bind-mount sources get resolved against that daemon's own filesystem — so
+# /var/run/docker.sock here means the VM's native socket, reached directly,
+# not proxied through a virtiofs share. (Unix domain sockets don't survive
+# that hop: the mounted file shows up with the right type bits, `ls`/`chmod`
+# work, but `connect()` fails with "Cannot connect to the Docker daemon" even
+# with Colima running, because the real listener is in macOS's kernel, not
+# the VM's.) On Docker Desktop, which doesn't have this Mac/VM split for
+# bind-mount resolution, /var/run/docker.sock is correct either way.
 services:
   agent:
     volumes:
       - ./agent_scratch:/home/agent/scratch
+      # - /var/run/docker.sock:/var/run/docker.sock

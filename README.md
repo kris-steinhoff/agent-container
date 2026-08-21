@@ -194,6 +194,8 @@ export ANTHROPIC_AUTH_TOKEN=lmstudio
 
 Rebuild the image on (or push it to) the remote host, run the compose stack there, then just point the `Host agent-container` block in `~/.ssh/config` at the remote address instead of `localhost`. Nothing about the container or the herdr invocation changes.
 
-## Known gaps
+## Shell
 
-- `zsh-autosuggestions` / `zsh-syntax-highlighting` in the shared zshrc are only sourced when Homebrew is present, which this container doesn't have (by choice, to keep the image apt-only). The shell works, just without those two plugins.
+The dotfiles' shared zshrc sources `zsh-autosuggestions` / `zsh-syntax-highlighting` from Homebrew paths, which don't exist here (no Homebrew, by choice, to keep the image apt-only). Both come from apt instead, and the build appends a source block to the end of `/home/agent/.zshrc` to load them (last, so syntax highlighting wraps every widget defined before it). `zsh-completions` has no Debian package, so it's cloned to `/usr/local/share/zsh-completions` and added to `fpath` from `/etc/zsh/zshrc`, which zsh reads before `~/.zshrc` and therefore before the shared zshrc's `compinit`.
+
+Both live outside chezmoi's control, so `chezmoi apply` won't clobber them. Note that `/home/agent/.zshrc` only comes from the image when `agent_home` is first created, so an existing volume needs `docker compose down -v` (or a manual edit) to pick up the plugin block.

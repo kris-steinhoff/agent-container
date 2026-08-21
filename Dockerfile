@@ -11,6 +11,8 @@ RUN apt-get update \
         openssh-server \
         sudo \
         zsh \
+        zsh-autosuggestions \
+        zsh-syntax-highlighting \
         direnv \
         ripgrep \
         fd-find \
@@ -124,6 +126,15 @@ RUN BINDIR=/usr/local/bin sh -c "$(curl -fsLS get.chezmoi.io)"
 
 RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 
+# zsh-completions has no Debian package, so clone the upstream repo. Its
+# completions live in src/, which has to join fpath *before* the compinit call
+# in the dotfiles' shared zshrc — hence /etc/zsh/zshrc, which zsh reads ahead
+# of ~/.zshrc.
+RUN mkdir -p /etc/zsh \
+    && git clone --depth 1 https://github.com/zsh-users/zsh-completions.git /usr/local/share/zsh-completions \
+    && rm -rf /usr/local/share/zsh-completions/.git \
+    && echo 'fpath=(/usr/local/share/zsh-completions/src $fpath)' >> /etc/zsh/zshrc
+
 # Debian's system pip refuses installs outside a venv (PEP 668); pre-commit
 # is a global CLI tool here, not a project dependency, so override that.
 RUN pip3 install --break-system-packages pre-commit
@@ -167,6 +178,21 @@ ENV PATH="/home/agent/.local/bin:${PATH}"
 # interactively (PATH is already set via ENV, so nothing is lost).
 RUN rm -f /home/agent/.zshrc
 RUN chezmoi init --apply kris-steinhoff/dotfiles
+
+# The shared zshrc sources zsh-autosuggestions/zsh-syntax-highlighting only
+# behind a `type brew` guard, which never fires in this image — they come from
+# apt here instead. Append them to the end of ~/.zshrc (which the bootstrap
+# above created, and which chezmoi doesn't manage): syntax-highlighting has to
+# be sourced after everything else that defines zle widgets.
+RUN printf '%s\n' \
+    '' \
+    '# apt-installed zsh plugins, sourced last on purpose (see Dockerfile).' \
+    'for _p in /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \' \
+    '          /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do' \
+    '  [ -r "$_p" ] && source "$_p"' \
+    'done' \
+    'unset _p' \
+    >> /home/agent/.zshrc
 
 # ---------------------------------------------------------------------------
 # Cache gate. Everything ABOVE stays cached across rebuilds; everything BELOW

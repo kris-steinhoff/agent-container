@@ -2,7 +2,7 @@
 
 A Debian-based container for running Claude Code / opencode isolated from the host, attached to with [herdr](https://herdr.dev) over SSH. Runs locally for now; moving it to a remote host later is a matter of changing the SSH target, not the image.
 
-Ships: `claude`, `opencode`, `copilot`, `codex`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi` (applies this dotfiles repo on build), and `sshd` so herdr can attach to a persistent session inside the container.
+Ships: `claude`, `opencode`, `copilot`, `codex`, `pi`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi` (applies this dotfiles repo on build), and `sshd` so herdr can attach to a persistent session inside the container.
 
 ## First-time setup
 
@@ -49,7 +49,7 @@ herdr --remote agent-container
 
 ### Keeping the fast-moving tools current
 
-`claude`, `copilot`, `codex`, `herdr`, and `bd` sit below a cache gate at the bottom of the Dockerfile so they can reinstall without busting the expensive base layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH` build arg: change its value and only those tools rebuild. A plain build defaults it to `0`, which reuses the cache. `./up` passes a fresh timestamp and forces a recreate so those tools track latest on every run:
+`claude`, `copilot`, `codex`, `pi`, `herdr`, and `bd` sit below a cache gate at the bottom of the Dockerfile so they can reinstall without busting the expensive base layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH` build arg: change its value and only those tools rebuild. A plain build defaults it to `0`, which reuses the cache. `./up` passes a fresh timestamp and forces a recreate so those tools track latest on every run:
 
 ```sh
 ./up

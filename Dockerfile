@@ -220,6 +220,13 @@ RUN npm install -g @anthropic-ai/claude-code @github/copilot @openai/codex \
     && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs" \
     && npm cache clean --force
 
+# Pi (https://pi.dev/): a minimal, extensible coding agent harness. Its
+# install.sh is an interactive TUI (animated logo, install/reinstall prompts),
+# so use the npm package it wraps instead. --ignore-scripts per Pi's own npm
+# install instructions; the package is plain JS with no postinstall step.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent \
+    && npm cache clean --force
+
 # Beads (bd): AI-supervised issue tracker CLI. No apt/npm package; the
 # installer resolves the latest release itself, so keep it below the cache
 # gate to track new versions. It installs to /usr/local/bin since that's

@@ -30,12 +30,21 @@ RUN apt-get update \
         python3-pip \
         locales \
         tini \
+        tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen && locale-gen \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat
 
 ENV LANG=en_US.UTF-8
+
+# Default the container clock to US/Detroit. tzdata is installed above; point
+# /etc/localtime at the zone and record it in /etc/timezone so `date`, cron,
+# and language runtimes all agree. TZ is exported too for tools that read it
+# directly rather than stat-ing /etc/localtime.
+RUN ln -sf /usr/share/zoneinfo/US/Detroit /etc/localtime \
+    && echo "US/Detroit" > /etc/timezone
+ENV TZ=US/Detroit
 
 # Corporate TLS-inspecting proxies (Zscaler, Netskope, etc.) re-sign HTTPS with
 # a private root CA the container doesn't trust, so every curl/npm/git fetch

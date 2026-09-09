@@ -20,6 +20,7 @@ RUN apt-get update \
         eza \
         fzf \
         jq \
+        iproute2 \
         less \
         unzip \
         xz-utils \
@@ -172,6 +173,17 @@ RUN useradd -m -s /usr/bin/zsh ${AGENT_UID:+-u "$AGENT_UID"} agent \
 COPY sshd_config /etc/ssh/sshd_config.d/agent-container.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
+# idle-monitor.sh is the cloud path's foreground process (entrypoint backgrounds
+# sshd and execs it when IDLE_MONITOR=1); inert on the local Docker path.
+COPY idle-monitor.sh /usr/local/bin/idle-monitor.sh
+RUN chmod 755 /usr/local/bin/idle-monitor.sh
+
+# uv installs to the invoking user's ~/.local/bin by default, which the cloud
+# path's EFS mount would shadow at /home/agent — uv would vanish on the next
+# boot. Install it to a system path as root instead, before dropping to
+# `agent`: UV_INSTALL_DIR relocates the binary and INSTALLER_NO_MODIFY_PATH
+# stops it rewriting shell profiles (/usr/local/bin is already on PATH).
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
 
 # chezmoi apply runs run_once_bootstrap.sh (which skips the brew step here
 # since brew isn't installed) to lay down dotfiles and pre-fetch the pinned
@@ -180,11 +192,12 @@ RUN chmod 755 /usr/local/bin/entrypoint.sh
 # the gate and doesn't need to exist yet for the config to be written.
 USER agent
 WORKDIR /home/agent
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv itself lives in /usr/local/bin (installed as root above); this keeps
+# `uv tool install` targets and other per-user bins on PATH. Harmless if empty.
 ENV PATH="/home/agent/.local/bin:${PATH}"
-# The uv installer above writes a fresh ~/.zshrc to wire up its PATH shim;
-# drop it so chezmoi's bootstrap can lay one down without prompting
-# interactively (PATH is already set via ENV, so nothing is lost).
+# Drop any stale ~/.zshrc so chezmoi's bootstrap can lay one down without
+# prompting interactively. (On the cloud path the EFS mount is empty on first
+# boot and chezmoi runs from entrypoint.sh instead — see it for the equivalent.)
 RUN rm -f /home/agent/.zshrc
 RUN chezmoi init --apply kris-steinhoff/dotfiles
 
@@ -192,7 +205,8 @@ RUN chezmoi init --apply kris-steinhoff/dotfiles
 # behind a `type brew` guard, which never fires in this image — they come from
 # apt here instead. Append them to the end of ~/.zshrc (which the bootstrap
 # above created, and which chezmoi doesn't manage): syntax-highlighting has to
-# be sourced after everything else that defines zle widgets.
+# be sourced after everything else that defines zle widgets. entrypoint.sh
+# appends the same block on the cloud path, where EFS shadows this ~/.zshrc.
 RUN printf '%s\n' \
     '' \
     '# apt-installed zsh plugins, sourced last on purpose (see Dockerfile).' \

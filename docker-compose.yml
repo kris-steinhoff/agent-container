@@ -31,9 +31,6 @@ services:
       # Mount a project in to work on it. Anything not mounted lives only
       # in agent_home and disappears if that volume is removed.
       # - ~/code/github.com/kris-steinhoff/some-project:/home/agent/workspace/some-project
-    environment:
-      - GITHUB_TOKEN
-      - GITLAB_TOKEN
 
 volumes:
   ssh_host_keys:

@@ -1,6 +1,6 @@
 # agent-container
 
-A Debian-based container for running Claude Code / opencode isolated from the host, attached to with [herdr](https://herdr.dev) over SSH. Runs locally for now; moving it to a remote host later is a matter of changing the SSH target, not the image.
+A Debian-based container for running Claude Code / opencode isolated from the host, attached to with [herdr](https://herdr.dev) over SSH. Runs locally via Docker Compose, or as a scale-to-zero remote box on AWS Fargate — same image, same herdr workflow, just a different SSH target. See [Running on AWS Fargate](#running-on-aws-fargate).
 
 Ships: `claude`, `opencode`, `copilot`, `codex`, `pi`, `neovim` (latest release), `gh`, `glab`, `uv`, `chezmoi` (applies this dotfiles repo on build), and `sshd` so herdr can attach to a persistent session inside the container.
 
@@ -49,13 +49,13 @@ herdr --remote agent-container
 
 ### Keeping the fast-moving tools current
 
-`claude`, `copilot`, `codex`, `pi`, `herdr`, and `bd` sit below a cache gate at the bottom of the Dockerfile so they can reinstall without busting the expensive base layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH` build arg: change its value and only those tools rebuild. A plain build defaults it to `0`, which reuses the cache. `./up` passes a fresh timestamp and forces a recreate so those tools track latest on every run:
+`claude`, `copilot`, `codex`, `pi`, `herdr`, and `bd` sit below a cache gate at the bottom of the Dockerfile so they can reinstall without busting the expensive base layers (apt, neovim, chezmoi plugin pre-fetch). The gate is the `TOOLS_REFRESH` build arg: change its value and only those tools rebuild. A plain build defaults it to `0`, which reuses the cache. `./up docker --build` passes a fresh timestamp and forces a recreate so those tools track latest:
 
 ```sh
-./up
+./up docker --build
 ```
 
-Equivalent to `TOOLS_REFRESH=$(date +%s) docker compose up -d --build --force-recreate` — the `--force-recreate` guarantees a fresh container even in the (normally unlikely) case Compose's own change detection wouldn't otherwise trigger one. Everything else (including `opencode`, `neovim`, `terraform`, `gh`, `glab`) stays cached until you edit the Dockerfile or build with `--no-cache`.
+Equivalent to `TOOLS_REFRESH=$(date +%s) docker compose up -d --build --force-recreate` — the `--force-recreate` guarantees a fresh container even in the (normally unlikely) case Compose's own change detection wouldn't otherwise trigger one. Everything else (including `opencode`, `neovim`, `terraform`, `gh`, `glab`) stays cached until you edit the Dockerfile or build with `--no-cache`. Plain `./up` (or `./up docker`) is the idempotent `docker compose up -d` with no rebuild; `./up docker --restart` force-recreates without rebuilding.
 
 `herdr --remote` installs herdr on the container the first time it connects and gives you a persistent session — detach and reattach freely, and it survives your local terminal closing.
 
@@ -192,7 +192,76 @@ export ANTHROPIC_AUTH_TOKEN=lmstudio
 
 ## Moving to a remote host later
 
-Rebuild the image on (or push it to) the remote host, run the compose stack there, then just point the `Host agent-container` block in `~/.ssh/config` at the remote address instead of `localhost`. Nothing about the container or the herdr invocation changes.
+Two ways. For any box you already run Docker on: rebuild the image on (or push it to) the remote host, run the compose stack there, then just point the `Host agent-container` block in `~/.ssh/config` at the remote address instead of `localhost`. Nothing about the container or the herdr invocation changes. For a managed, scale-to-zero remote box with nothing to keep running, use AWS Fargate — see below.
+
+## Running on AWS Fargate
+
+The same image, run as a single standalone Fargate task you start on demand with `./up cloud`. It scales to zero: when nothing's using it (no herdr agent working, nobody SSH'd in) it stops itself after ~30 minutes, and a stopped task costs nothing for compute. `./up cloud` again brings it straight back. The task gets a fresh auto-assigned public IP each start, so there's no fixed address — instead `./up cloud` resolves the current IP and rewrites the `Host agent-container` block in the project-root `ssh_config` (the same file you already `Include` from `~/.ssh/config`), so `herdr --remote agent-container` keeps working unchanged. The sshd host keys live on EFS, so the host key is stable across restarts and `known_hosts` doesn't churn even though the IP moves. Persistence (the whole `/home/agent`: dotfiles, auth tokens, herdr, project checkouts) lives on EFS and survives the task exiting.
+
+`ssh_config` is tracked, but `./up` now owns its `Host agent-container` block: `./up cloud` writes the current cloud IP into it and `./up docker` restores the committed `localhost:2222` values. So while you're pointed at the cloud task the file shows as modified in git — that's expected, and you don't commit the cloud IP. A clean checkout stays in the local state.
+
+Why a bare task and not an ECS Service: a Service would keep something running (and billing) to maintain desired-count. A one-off task that exits when idle is the whole point — the container's process exiting _is_ the scale-to-zero.
+
+### One-time setup
+
+Everything AWS-side is Terraform in `terraform/`:
+
+```sh
+cd terraform
+terraform init
+terraform apply
+```
+
+That creates the ECR repo, the EFS filesystem + access point, the ECS cluster, task definition, IAM roles, the two security groups, the CloudWatch log group, and an SSM parameter for your authorized key. Put your public key into that parameter (it's created with a placeholder, and Terraform ignores its value afterward so it never lands in state):
+
+```sh
+aws ssm put-parameter --name /agent-container/authorized_keys --type String \
+  --overwrite --value "$(ssh-add -L | head -1)"
+```
+
+Then build and push the first image (arm64, since Fargate here runs Graviton):
+
+```sh
+cd ..
+./up cloud --build
+```
+
+No SSH-config editing to do — you already `Include` the project-root `ssh_config` from `~/.ssh/config` (from the first-time setup at the top of this README), and `./up cloud` keeps its `Host agent-container` block pointed at the running task.
+
+### Daily use
+
+```sh
+./up cloud
+```
+
+Starts the task if it's stopped (or reconnects you if it's already up), resolves its public IP and writes it into the `Host agent-container` block in `ssh_config`, opens port 22 to your current public IP, waits for SSH, and prints the `herdr --remote agent-container` line. Then attach as usual. The box shuts itself down after ~30 minutes with no herdr agent running and nobody SSH'd in; run `./up cloud` again to restart it (a fresh task — the in-container herdr server is gone, but everything in `/home/agent` is still on EFS, so `herdr --remote` reinstalls and reconnects).
+
+- `./up cloud --restart` stops the running task and launches a fresh one. This kills the in-container herdr server, so any live agents go with it.
+- `./up cloud --build` rebuilds the arm64 image, pushes it to ECR, then restarts onto it. Implies `--restart`.
+- `./up cloud --stop` stops the task now (scale to zero on demand).
+- `./up cloud --cidr 203.0.113.0/24` opens port 22 to a specific CIDR instead of your detected `/32`.
+
+Each `./up cloud` rewrites the SSH security group so port 22 is open only to your current IP — no standing world-open rule.
+
+### Configuration
+
+- `AWS_REGION` — region for `./up cloud`'s API calls (default `us-east-2`). Terraform pins the same default via `var.region`; set `TF_VAR_region` to match if you change it.
+- `AGENT_SUBNET_ID` — pin the task to a specific public subnet. `./up` forwards it to Terraform as `TF_VAR_subnet_id`. Left unset, Terraform uses the default VPC's default subnet.
+- The idle-shutdown thresholds, all set on the task and overridable in the task definition's environment: `IDLE_TIMEOUT` (default 1800s — how long idle must hold before it stops), `STARTUP_GRACE` (default 1200s — never stop within this of boot), `MAX_LIFETIME` (default 43200s — hard cap, stop regardless), `IDLE_POLL_INTERVAL` (default 120s).
+- Each Terraform output also has an `AGENT_*` env override (`AGENT_CLUSTER_ARN`, `AGENT_TASK_DEFINITION_FAMILY`, `AGENT_ECR_REPOSITORY_URL`, `AGENT_TASK_SG_ID`, `AGENT_SSH_SG_ID`, `AGENT_SUBNET_ID`, `AGENT_LOG_GROUP`), so you can drive `./up cloud` without Terraform on PATH once you know the values.
+
+### Handing files back and forth
+
+There's no bind mount in the cloud, so the shared scratch directory works over rsync instead. `scratch-pull` copies `agent-container:scratch/` down into `./agent_scratch/`; `scratch-push` copies the other way. Both take an optional path (relative to `scratch/`) to sync a single file or subdir, and both refuse if `./agent_scratch` doesn't exist yet (`mkdir -p agent_scratch` first):
+
+```sh
+scratch-pull                 # everything the agent left in ~/scratch
+scratch-push diagram.drawio  # hand one file to the agent
+```
+
+### Cost
+
+Roughly \$1.50/month while idle: the EFS storage you use plus ECR storage for the image — there's no Elastic IP to pay for, since the task uses its own auto-assigned public IP. Fargate compute is billed only while a task is actually running — a 1 vCPU / 4 GB Graviton task is a few cents an hour, and you pay nothing for it once the box scales to zero.
 
 ## Shell
 

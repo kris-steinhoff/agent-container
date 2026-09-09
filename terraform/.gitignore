@@ -1,0 +1,7 @@
+# Local Terraform working files — provider plugins, state, and any tfvars.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

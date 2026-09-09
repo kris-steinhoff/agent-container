@@ -1,5 +1,436 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["boto3[crt]"]
+# ///
+"""Bring the agent-container up locally (Docker Compose) or in the cloud (Fargate).
 
-export TOOLS_REFRESH=$(date +%s)
+    ./up                     ==  ./up docker           (idempotent local up -d)
+    ./up docker [--restart] [--build]
+    ./up cloud  [--restart] [--build] [--stop] [--cidr CIDR]
 
-docker compose up -d --build --force-recreate
+The cloud path runs a single standalone Fargate task (not a Service): launch it
+with `./up cloud`, it stops itself when idle (task STOPPED -> $0), and `./up
+cloud` again brings it back. The task's public IP changes each start, so `./up
+cloud` resolves it and writes a `Host agent-container` block into an SSH config
+fragment you Include from ~/.ssh/config once; the persisted EFS host keys keep
+the host key stable, so `herdr --remote agent-container` works like the local
+setup.
+
+Config comes from `terraform -chdir=terraform output -json`; each value is also
+overridable by the AGENT_* env var named in CONFIG_ENV below. Region is
+AWS_REGION else us-east-2.
+"""
+
+import argparse
+import base64
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+STARTED_BY = "up-cloud"  # tags the task so this script can find "the" one
+DEFAULT_REGION = "us-east-2"
+
+# Terraform output name -> env var that overrides it (so you can drive ./up
+# cloud without Terraform on PATH once you know the values).
+CONFIG_ENV = {
+    "cluster_arn": "AGENT_CLUSTER_ARN",
+    "task_definition_family": "AGENT_TASK_DEFINITION_FAMILY",
+    "task_security_group_id": "AGENT_TASK_SG_ID",
+    "ssh_security_group_id": "AGENT_SSH_SG_ID",
+    "subnet_id": "AGENT_SUBNET_ID",
+    "log_group_name": "AGENT_LOG_GROUP",
+}
+
+
+def run(cmd, **kwargs):
+    """Run a command, echoing it first so the script stays legible."""
+    print("+ " + " ".join(cmd))
+    return subprocess.run(cmd, check=True, **kwargs)
+
+
+def region():
+    return os.environ.get("AWS_REGION") or DEFAULT_REGION
+
+
+# ---------------------------------------------------------------------------
+# Local Docker path.
+# ---------------------------------------------------------------------------
+def cmd_docker(args):
+    env = os.environ.copy()
+    compose = ["docker", "compose", "up", "-d"]
+    if args.build:
+        # Fresh cache-gate token so the fast-moving tools reinstall; today's
+        # `./up` behavior. --build implies a recreate.
+        env["TOOLS_REFRESH"] = str(int(time.time()))
+        compose += ["--build", "--force-recreate"]
+    elif args.restart:
+        compose += ["--force-recreate"]
+    run(compose, cwd=REPO, env=env)
+    # Point the agent-container SSH alias back at the local container, in case
+    # it was last aimed at a cloud task.
+    update_ssh_config(render_ssh_block("docker"))
+
+
+# ---------------------------------------------------------------------------
+# Cloud config.
+# ---------------------------------------------------------------------------
+def terraform_outputs():
+    env = os.environ.copy()
+    if os.environ.get("AGENT_SUBNET_ID"):
+        env["TF_VAR_subnet_id"] = os.environ["AGENT_SUBNET_ID"]
+    try:
+        proc = subprocess.run(
+            ["terraform", f"-chdir={REPO / 'terraform'}", "output", "-json"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        detail = (getattr(exc, "stderr", "") or str(exc)).strip()
+        print(f"terraform output unavailable ({detail}); relying on AGENT_* env overrides.",
+              file=sys.stderr)
+        return {}
+    data = json.loads(proc.stdout or "{}")
+    return {name: entry.get("value") for name, entry in data.items()}
+
+
+def load_config():
+    outs = terraform_outputs()
+    cfg = {}
+    missing = []
+    for key, envvar in CONFIG_ENV.items():
+        val = os.environ.get(envvar) or outs.get(key)
+        cfg[key] = val
+        if not val:
+            missing.append(f"{key} (${envvar})")
+    if missing:
+        sys.exit("Missing required config: " + ", ".join(missing) +
+                 "\nRun `terraform -chdir=terraform apply` first, or set the env overrides.")
+    # Only needed for --build; don't hard-require it for a plain start.
+    cfg["ecr_repository_url"] = (
+        os.environ.get("AGENT_ECR_REPOSITORY_URL") or outs.get("ecr_repository_url")
+    )
+    return cfg
+
+
+def clients():
+    import boto3
+    reg = region()
+    return boto3.client("ecs", region_name=reg), boto3.client("ec2", region_name=reg)
+
+
+# ---------------------------------------------------------------------------
+# Task lifecycle.
+# ---------------------------------------------------------------------------
+def find_task(ecs, cluster):
+    """The startedBy=up-cloud task, or None. Prefers the desired-RUNNING one;
+    falls back to a still-STOPPING task so we can wait it out."""
+    arns = ecs.list_tasks(cluster=cluster, startedBy=STARTED_BY,
+                          desiredStatus="RUNNING")["taskArns"]
+    if not arns:
+        arns = ecs.list_tasks(cluster=cluster, startedBy=STARTED_BY,
+                              desiredStatus="STOPPED")["taskArns"]
+    if not arns:
+        return None
+    tasks = ecs.describe_tasks(cluster=cluster, tasks=arns)["tasks"]
+    live = [t for t in tasks if t["lastStatus"] != "STOPPED"]
+    if not live:
+        return None
+    live.sort(key=lambda t: t["createdAt"], reverse=True)
+    return live[0]
+
+
+def start_task(ecs, cfg):
+    print("Launching a new Fargate task...")
+    resp = ecs.run_task(
+        cluster=cfg["cluster_arn"],
+        taskDefinition=cfg["task_definition_family"],
+        launchType="FARGATE",
+        count=1,
+        startedBy=STARTED_BY,
+        networkConfiguration={"awsvpcConfiguration": {
+            "subnets": [cfg["subnet_id"]],
+            "securityGroups": [cfg["task_security_group_id"], cfg["ssh_security_group_id"]],
+            "assignPublicIp": "ENABLED",
+        }},
+    )
+    failures = resp.get("failures") or []
+    if failures:
+        sys.exit(f"run_task failed: {failures}")
+    arn = resp["tasks"][0]["taskArn"]
+    print(f"  task {arn.split('/')[-1]}")
+    return arn
+
+
+def wait_running(ecs, cluster, task_arn):
+    print("Waiting for the task to reach RUNNING...")
+    ecs.get_waiter("tasks_running").wait(
+        cluster=cluster, tasks=[task_arn], WaiterConfig={"Delay": 6, "MaxAttempts": 50})
+    return ecs.describe_tasks(cluster=cluster, tasks=[task_arn])["tasks"][0]
+
+
+def wait_stopped(ecs, cluster, task_arn):
+    print("Waiting for the task to reach STOPPED...")
+    ecs.get_waiter("tasks_stopped").wait(
+        cluster=cluster, tasks=[task_arn], WaiterConfig={"Delay": 6, "MaxAttempts": 60})
+
+
+def eni_of_task(task):
+    for att in task.get("attachments", []):
+        if att.get("type") == "ElasticNetworkInterface":
+            for detail in att.get("details", []):
+                if detail.get("name") == "networkInterfaceId":
+                    return detail.get("value")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Side-effect reconciliation: resolve the public IP + the single tcp/22 rule.
+# ---------------------------------------------------------------------------
+def public_ip_of_eni(ec2, eni_id):
+    eni = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])["NetworkInterfaces"][0]
+    ip = eni.get("Association", {}).get("PublicIp")
+    if not ip:
+        sys.exit(f"Task ENI {eni_id} has no public IP; is assignPublicIp ENABLED on the task?")
+    return ip
+
+
+def reconcile_sg(ec2, sg_id, cidr):
+    """Ensure the ssh SG has exactly one tcp/22 ingress rule, for `cidr`. IPv4
+    only; no-op when it already matches, otherwise revoke all tcp/22 and
+    authorize the desired one."""
+    sg = ec2.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+    perms22 = [p for p in sg["IpPermissions"]
+               if p.get("IpProtocol") == "tcp" and p.get("FromPort") == 22 and p.get("ToPort") == 22]
+    current = sorted(r["CidrIp"] for p in perms22 for r in p.get("IpRanges", []))
+    has_v6 = any(p.get("Ipv6Ranges") for p in perms22)
+    if current == [cidr] and not has_v6:
+        print(f"SSH ingress already allows exactly {cidr}.")
+        return
+    revoke = []
+    for p in perms22:
+        entry = {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22}
+        if p.get("IpRanges"):
+            entry["IpRanges"] = p["IpRanges"]
+        if p.get("Ipv6Ranges"):
+            entry["Ipv6Ranges"] = p["Ipv6Ranges"]
+        if len(entry) > 3:
+            revoke.append(entry)
+    if revoke:
+        print("Revoking existing tcp/22 ingress...")
+        ec2.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=revoke)
+    print(f"Authorizing tcp/22 ingress from {cidr}...")
+    ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[{
+        "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+        "IpRanges": [{"CidrIp": cidr, "Description": "up cloud managed"}],
+    }])
+
+
+def desired_cidr(cidr_arg):
+    if cidr_arg:
+        return cidr_arg
+    with urllib.request.urlopen("https://checkip.amazonaws.com", timeout=10) as resp:
+        ip = resp.read().decode().strip()
+    return f"{ip}/32"
+
+
+def wait_port(host, port=22, timeout=180):
+    print(f"Polling {host}:{port} for SSH (up to {timeout}s)...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                print("Port 22 is open.")
+                return True
+        except OSError:
+            time.sleep(3)
+    return False
+
+
+def build_and_push(cfg):
+    repo = cfg.get("ecr_repository_url")
+    if not repo:
+        sys.exit("ecr_repository_url unavailable (terraform output / $AGENT_ECR_REPOSITORY_URL); "
+                 "cannot --build.")
+    import boto3
+    registry = repo.split("/")[0]
+    print("Logging in to ECR...")
+    token = boto3.client("ecr", region_name=region()).get_authorization_token()
+    raw = token["authorizationData"][0]["authorizationToken"]
+    user, password = base64.b64decode(raw).decode().split(":", 1)
+    subprocess.run(["docker", "login", "--username", user, "--password-stdin", registry],
+                   input=password, text=True, check=True)
+    run(["docker", "buildx", "build", "--platform", "linux/arm64",
+         "--build-arg", "AGENT_UID=1001", "-t", f"{repo}:latest", "--push", "."], cwd=REPO)
+
+
+def render_ssh_block(mode, ip=None):
+    """The `Host agent-container` stanza pointing at the currently-running
+    target. The local block restores the committed localhost:2222 values; the
+    cloud block uses the task's resolved public IP, with CheckHostIP no +
+    accept-new because that IP changes each start while the EFS-persisted host
+    key is constant — matching is on the `agent-container` alias."""
+    if mode == "docker":
+        return (
+            "Host agent-container\n"
+            "    HostName localhost\n"
+            "    Port 2222\n"
+            "    User agent\n"
+            "    ForwardAgent no\n"
+        )
+    return (
+        "Host agent-container\n"
+        f"    HostName {ip}\n"
+        "    Port 22\n"
+        "    User agent\n"
+        "    ForwardAgent no\n"
+        "    CheckHostIP no\n"
+        "    StrictHostKeyChecking accept-new\n"
+    )
+
+
+def _first_token(line):
+    parts = line.split(None, 1)
+    return parts[0].lower() if parts else ""
+
+
+def update_ssh_config(block):
+    """Rewrite the `Host agent-container` stanza in the project-root ssh_config,
+    leaving everything else untouched; append it if the stanza is absent. The
+    file is Include'd from ~/.ssh/config, so this is what makes the
+    agent-container alias point at whichever target is currently up."""
+    path = REPO / "ssh_config"
+    lines = path.read_text().splitlines() if path.exists() else []
+    block_lines = block.rstrip("\n").split("\n")
+    out = []
+    i, n = 0, len(lines)
+    replaced = False
+    while i < n:
+        parts = lines[i].split()
+        if parts and parts[0].lower() == "host" and parts[1:] == ["agent-container"]:
+            i += 1
+            while i < n and _first_token(lines[i]) not in ("host", "match"):
+                i += 1
+            out.extend(block_lines)
+            replaced = True
+            continue
+        out.append(lines[i])
+        i += 1
+    if not replaced:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(block_lines)
+    path.write_text("\n".join(out).rstrip("\n") + "\n")
+    print(f"Updated {path} (Host agent-container)")
+    return path
+
+
+def print_ready():
+    print()
+    print("Attach with:")
+    print("    herdr --remote agent-container")
+
+
+def finish(ecs, ec2, cfg, task):
+    """Resolve the public IP, fix the SG rule, wait for SSH, point the
+    agent-container SSH alias at it, print the herdr line."""
+    eni = eni_of_task(task)
+    if not eni:
+        sys.exit("Could not find the task's ENI; cannot resolve its public IP.")
+    ip = public_ip_of_eni(ec2, eni)
+    reconcile_sg(ec2, cfg["ssh_security_group_id"], cfg["_cidr"])
+    update_ssh_config(render_ssh_block("cloud", ip))
+    if not wait_port(ip):
+        print(f"Task is RUNNING at {ip}, but port 22 did not open in time.")
+        print("Check the container logs in CloudWatch group:", cfg["log_group_name"])
+        return
+    print_ready()
+
+
+# ---------------------------------------------------------------------------
+# Cloud path.
+# ---------------------------------------------------------------------------
+def cmd_cloud(args):
+    cfg = load_config()
+    ecs, ec2 = clients()
+    cluster = cfg["cluster_arn"]
+
+    if args.stop:
+        task = find_task(ecs, cluster)
+        if task and task["lastStatus"] in ("PROVISIONING", "PENDING", "RUNNING", "STOPPING"):
+            name = task["taskArn"].split("/")[-1]
+            print(f"Stopping task {name} ({task['lastStatus']})...")
+            ecs.stop_task(cluster=cluster, task=task["taskArn"], reason="up cloud --stop")
+        else:
+            print("No running task to stop.")
+        return
+
+    if args.build:
+        build_and_push(cfg)
+        args.restart = True
+
+    cfg["_cidr"] = desired_cidr(args.cidr)
+
+    task = find_task(ecs, cluster)
+    status = task["lastStatus"] if task else None
+
+    # --restart: tear down a live task first, then fall through to a fresh run.
+    if args.restart and status in ("PROVISIONING", "PENDING", "RUNNING"):
+        print("--restart: stopping the current task (this kills the in-container herdr server)...")
+        ecs.stop_task(cluster=cluster, task=task["taskArn"], reason="up cloud --restart")
+        wait_stopped(ecs, cluster, task["taskArn"])
+        task, status = None, None
+
+    if status == "STOPPING":
+        wait_stopped(ecs, cluster, task["taskArn"])
+        task, status = None, None
+
+    if status in ("PROVISIONING", "PENDING"):
+        task = wait_running(ecs, cluster, task["taskArn"])
+        status = "RUNNING"
+
+    if status == "RUNNING":
+        # Already up: reconcile side-effects only, don't disrupt it.
+        finish(ecs, ec2, cfg, task)
+        return
+
+    # none / STOPPED -> launch fresh.
+    arn = start_task(ecs, cfg)
+    task = wait_running(ecs, cluster, arn)
+    finish(ecs, ec2, cfg, task)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="up",
+        description="Bring the agent-container up locally (Docker) or in the cloud (Fargate).")
+    sub = parser.add_subparsers(dest="target")
+
+    d = sub.add_parser("docker", help="Local Docker Compose container (the default).")
+    d.add_argument("--restart", action="store_true", help="Force-recreate the container.")
+    d.add_argument("--build", action="store_true",
+                   help="Rebuild the image (fresh TOOLS_REFRESH) and recreate. Implies --restart.")
+    d.set_defaults(func=cmd_docker)
+
+    c = sub.add_parser("cloud", help="Single standalone Fargate task (scale-to-zero).")
+    c.add_argument("--restart", action="store_true",
+                   help="Stop the running task and launch a fresh one (kills the in-container herdr server).")
+    c.add_argument("--build", action="store_true",
+                   help="Build the arm64 image, push to ECR, then restart. Implies --restart.")
+    c.add_argument("--stop", action="store_true", help="Stop the running task and exit (scale to zero).")
+    c.add_argument("--cidr", help="CIDR allowed to reach port 22 (default: your public IP /32).")
+    c.set_defaults(func=cmd_cloud)
+
+    args = parser.parse_args()
+    if args.target is None:
+        args = parser.parse_args(["docker"])  # `./up` == `./up docker`
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

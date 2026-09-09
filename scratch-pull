@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pull the shared scratch directory from the container down to this Mac:
+# agent-container:scratch/ -> ./agent_scratch/. The cloud path has no
+# bind-mount, so this rsync is how you get an agent's draft artifacts out (and
+# scratch-push is how you get files in). Pass an optional path (relative to
+# scratch/) to sync just one file or subdir.
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+local_dir="$here/agent_scratch"
+
+if [ ! -d "$local_dir" ]; then
+    echo "scratch-pull: $local_dir does not exist — create it first: mkdir -p '$local_dir'" >&2
+    exit 1
+fi
+
+sub="${1:-}"
+rsync -az --partial -e ssh "agent-container:scratch/${sub}" "$local_dir/"

@@ -1,2 +1,6 @@
 export COMPOSE_FILE=docker-compose.yml:docker-compose.local.yml
 export AGENT_UID=$(id -u)
+
+# Cloud path (`./up cloud`), all optional — see README "Running on AWS Fargate":
+# export AWS_REGION=us-east-2          # region for ./up cloud (default us-east-2)
+# export AGENT_SUBNET_ID=subnet-...    # pin the task to a subnet (forwarded as TF_VAR_subnet_id)

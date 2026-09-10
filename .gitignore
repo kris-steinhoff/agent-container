@@ -2,6 +2,8 @@
 .env
 /authorized_keys
 /certs/*
+# Generated and owned by ./up (Include'd from ~/.ssh/config).
+/ssh_config
 
 /docker-compose.local.yml
 /agent_scratch/

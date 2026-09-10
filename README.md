@@ -20,14 +20,14 @@ echo 'ssh-ed25519 AAAA... key-comment' > authorized_keys
 
 (gitignored via the repo's root `.gitignore` and kept out of the image via `.dockerignore` regardless.)
 
-The `Host agent-container` entry that herdr (and plain `ssh`) needs lives in `ssh_config` next to this README — this is the file to edit when you move to a remote host later (just change `HostName`). Pull it into your real SSH config with an `Include`, added near the top of `~/.ssh/config` since `Include` is processed in place and `ssh_config` uses first-match-wins:
+The SSH aliases herdr (and plain `ssh`) use live in `ssh_config` next to this README. That file is generated and owned by `./up` (and gitignored) — it holds two `Host` entries, `agent-container-docker` (the local container) and `agent-container-cloud` (the Fargate task, covered below), and each `./up` run rewrites it to point at whatever's currently up. Pull it into your real SSH config with an `Include`, added near the top of `~/.ssh/config` since `Include` is processed in place and first-match-wins:
 
 ```
 # ~/.ssh/config
-Include ~/.config/kris-steinhoff/agent-container/ssh_config
+Include ~/Code/github.com/kris-steinhoff/agent-container/ssh_config
 ```
 
-`ForwardAgent yes` in that entry lets git inside the container use your host's ssh-agent for clone/push over SSH, without ever putting a private key in the image.
+Point the path at wherever you checked the repo out. The file doesn't exist until your first `./up`, and that's fine — ssh treats a missing `Include` target as a no-op, and the first run creates it.
 
 ## Behind a TLS-inspecting proxy
 
@@ -44,8 +44,10 @@ cp /path/to/corp-root-ca.pem certs/corp.crt
 ```sh
 docker compose build
 docker compose up -d
-herdr --remote agent-container
+herdr --remote agent-container-docker
 ```
+
+(Running `./up` instead of the raw `docker compose up -d` also generates the `ssh_config` with both aliases; the bare `docker compose` commands above don't, so create it with a `./up` run before the first `herdr --remote`.)
 
 ### Keeping the fast-moving tools current
 
@@ -192,13 +194,11 @@ export ANTHROPIC_AUTH_TOKEN=lmstudio
 
 ## Moving to a remote host later
 
-Two ways. For any box you already run Docker on: rebuild the image on (or push it to) the remote host, run the compose stack there, then just point the `Host agent-container` block in `~/.ssh/config` at the remote address instead of `localhost`. Nothing about the container or the herdr invocation changes. For a managed, scale-to-zero remote box with nothing to keep running, use AWS Fargate — see below.
+Two ways. For any box you already run Docker on: rebuild the image on (or push it to) the remote host, run the compose stack there, then point an SSH `Host` alias at the remote address instead of `localhost` (its own entry — don't edit the `./up`-generated `ssh_config`, which gets overwritten). Nothing about the container or the herdr invocation changes. For a managed, scale-to-zero remote box with nothing to keep running, use AWS Fargate — see below.
 
 ## Running on AWS Fargate
 
-The same image, run as a single standalone Fargate task you start on demand with `./up cloud`. It scales to zero: when nothing's using it (no herdr agent working, nobody SSH'd in) it stops itself after ~30 minutes, and a stopped task costs nothing for compute. `./up cloud` again brings it straight back. The task gets a fresh auto-assigned public IP each start, so there's no fixed address — instead `./up cloud` resolves the current IP and rewrites the `Host agent-container` block in the project-root `ssh_config` (the same file you already `Include` from `~/.ssh/config`), so `herdr --remote agent-container` keeps working unchanged. The sshd host keys live on EFS, so the host key is stable across restarts and `known_hosts` doesn't churn even though the IP moves. Persistence (the whole `/home/agent`: dotfiles, auth tokens, herdr, project checkouts) lives on EFS and survives the task exiting.
-
-`ssh_config` is tracked, but `./up` now owns its `Host agent-container` block: `./up cloud` writes the current cloud IP into it and `./up docker` restores the committed `localhost:2222` values. So while you're pointed at the cloud task the file shows as modified in git — that's expected, and you don't commit the cloud IP. A clean checkout stays in the local state.
+The same image, run as a single standalone Fargate task you start on demand with `./up cloud`. It scales to zero: when nothing's using it (no herdr agent working, nobody SSH'd in) it stops itself after ~30 minutes, and a stopped task costs nothing for compute. `./up cloud` again brings it straight back. You attach through the `agent-container-cloud` SSH alias — `herdr --remote agent-container-cloud`. The task gets a fresh auto-assigned public IP each start, so there's no fixed address: `./up cloud` resolves the current IP and writes it into that alias's `HostName` in the generated `ssh_config` (which you `Include` from `~/.ssh/config`). The sshd host keys live on EFS, so the host key is stable across restarts and `known_hosts` doesn't churn even though the IP moves. Persistence (the whole `/home/agent`: dotfiles, auth tokens, herdr, project checkouts) lives on EFS and survives the task exiting.
 
 Why a bare task and not an ECS Service: a Service would keep something running (and billing) to maintain desired-count. A one-off task that exits when idle is the whole point — the container's process exiting _is_ the scale-to-zero.
 
@@ -226,7 +226,7 @@ cd ..
 ./up cloud --build
 ```
 
-No SSH-config editing to do — you already `Include` the project-root `ssh_config` from `~/.ssh/config` (from the first-time setup at the top of this README), and `./up cloud` keeps its `Host agent-container` block pointed at the running task.
+No SSH-config editing to do — you already `Include` the project-root `ssh_config` from `~/.ssh/config` (from the first-time setup at the top of this README), and `./up cloud` keeps its `agent-container-cloud` alias pointed at the running task.
 
 ### Daily use
 
@@ -234,7 +234,7 @@ No SSH-config editing to do — you already `Include` the project-root `ssh_conf
 ./up cloud
 ```
 
-Starts the task if it's stopped (or reconnects you if it's already up), resolves its public IP and writes it into the `Host agent-container` block in `ssh_config`, opens port 22 to your current public IP, waits for SSH, and prints the `herdr --remote agent-container` line. Then attach as usual. The box shuts itself down after ~30 minutes with no herdr agent running and nobody SSH'd in; run `./up cloud` again to restart it (a fresh task — the in-container herdr server is gone, but everything in `/home/agent` is still on EFS, so `herdr --remote` reinstalls and reconnects).
+Starts the task if it's stopped (or reconnects you if it's already up), resolves its public IP and writes it into the `agent-container-cloud` alias in `ssh_config`, opens port 22 to your current public IP, waits for SSH, and prints the `herdr --remote agent-container-cloud` line. Then attach as usual. The box shuts itself down after ~30 minutes with no herdr agent running and nobody SSH'd in; run `./up cloud` again to restart it (a fresh task — the in-container herdr server is gone, but everything in `/home/agent` is still on EFS, so `herdr --remote` reinstalls and reconnects).
 
 - `./up cloud --restart` stops the running task and launches a fresh one. This kills the in-container herdr server, so any live agents go with it.
 - `./up cloud --build` rebuilds the arm64 image, pushes it to ECR, then restarts onto it. Implies `--restart`.

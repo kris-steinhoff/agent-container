@@ -9,13 +9,14 @@
     ./up docker [--restart] [--build]
     ./up cloud  [--restart] [--build] [--stop] [--cidr CIDR]
 
-The cloud path runs a single standalone Fargate task (not a Service): launch it
-with `./up cloud`, it stops itself when idle (task STOPPED -> $0), and `./up
-cloud` again brings it back. The task's public IP changes each start, so `./up
-cloud` resolves it and writes a `Host agent-container` block into an SSH config
-fragment you Include from ~/.ssh/config once; the persisted EFS host keys keep
-the host key stable, so `herdr --remote agent-container` works like the local
-setup.
+Both subcommands (re)generate the whole `ssh_config` (gitignored, Include'd from
+~/.ssh/config once): a static `agent-container-docker` alias for the local
+container and an `agent-container-cloud` alias for the Fargate task. The cloud
+path runs a single standalone task (not a Service): launch it with `./up cloud`,
+it stops itself when idle (task STOPPED -> $0), and `./up cloud` again brings it
+back. The task's public IP changes each start, so `./up cloud` resolves it and
+writes it into the cloud alias; the persisted EFS host keys keep the host key
+stable, so `herdr --remote agent-container-cloud` works like the local setup.
 
 Config comes from `terraform -chdir=terraform output -json`; each value is also
 overridable by the AGENT_* env var named in CONFIG_ENV below. Region is
@@ -26,6 +27,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -73,9 +75,12 @@ def cmd_docker(args):
     elif args.restart:
         compose += ["--force-recreate"]
     run(compose, cwd=REPO, env=env)
-    # Point the agent-container SSH alias back at the local container, in case
-    # it was last aimed at a cloud task.
-    update_ssh_config(render_ssh_block("docker"))
+    # Regenerate ssh_config (keeping any current cloud IP) so the docker alias
+    # is present, then point the user at it.
+    write_ssh_config()
+    print()
+    print("Attach with:")
+    print("    herdr --remote agent-container-docker")
 
 
 # ---------------------------------------------------------------------------
@@ -269,82 +274,69 @@ def build_and_push(cfg):
          "--build-arg", "AGENT_UID=1001", "-t", f"{repo}:latest", "--push", "."], cwd=REPO)
 
 
-def render_ssh_block(mode, ip=None):
-    """The `Host agent-container` stanza pointing at the currently-running
-    target. The local block restores the committed localhost:2222 values; the
-    cloud block uses the task's resolved public IP, with CheckHostIP no +
-    accept-new because that IP changes each start while the EFS-persisted host
-    key is constant — matching is on the `agent-container` alias."""
-    if mode == "docker":
-        return (
-            "Host agent-container\n"
-            "    HostName localhost\n"
-            "    Port 2222\n"
-            "    User agent\n"
-            "    ForwardAgent no\n"
-        )
-    return (
-        "Host agent-container\n"
-        f"    HostName {ip}\n"
-        "    Port 22\n"
-        "    User agent\n"
-        "    ForwardAgent no\n"
-        "    CheckHostIP no\n"
-        "    StrictHostKeyChecking accept-new\n"
-    )
+# The whole ssh_config is owned by ./up (gitignored, Include'd from
+# ~/.ssh/config). agent-container-docker is always static; only the cloud
+# alias's HostName is dynamic — the cloud task's IP changes each start, and
+# CheckHostIP no + accept-new keep known_hosts stable (the EFS-persisted host
+# key is constant, so matching is on the alias, not the address).
+SSH_CONFIG_TEMPLATE = """\
+Host agent-container-docker
+    HostName localhost
+    Port 2222
+    User agent
+    ForwardAgent no
+
+Host agent-container-cloud
+    HostName {cloud_ip}
+    Port 22
+    User agent
+    ForwardAgent no
+    CheckHostIP no
+    StrictHostKeyChecking accept-new
+"""
+
+SSH_CONFIG_PATH = REPO / "ssh_config"
 
 
-def _first_token(line):
-    parts = line.split(None, 1)
-    return parts[0].lower() if parts else ""
+def existing_cloud_ip():
+    """The HostName from the current ssh_config's agent-container-cloud stanza,
+    or None — used to preserve it when ./up docker rewrites the file."""
+    try:
+        text = SSH_CONFIG_PATH.read_text()
+    except OSError:
+        return None
+    match = re.search(
+        r"^Host\s+agent-container-cloud\s*$.*?^\s*HostName\s+(\S+)",
+        text, re.MULTILINE | re.DOTALL)
+    return match.group(1) if match else None
 
 
-def update_ssh_config(block):
-    """Rewrite the `Host agent-container` stanza in the project-root ssh_config,
-    leaving everything else untouched; append it if the stanza is absent. The
-    file is Include'd from ~/.ssh/config, so this is what makes the
-    agent-container alias point at whichever target is currently up."""
-    path = REPO / "ssh_config"
-    lines = path.read_text().splitlines() if path.exists() else []
-    block_lines = block.rstrip("\n").split("\n")
-    out = []
-    i, n = 0, len(lines)
-    replaced = False
-    while i < n:
-        parts = lines[i].split()
-        if parts and parts[0].lower() == "host" and parts[1:] == ["agent-container"]:
-            i += 1
-            while i < n and _first_token(lines[i]) not in ("host", "match"):
-                i += 1
-            out.extend(block_lines)
-            replaced = True
-            continue
-        out.append(lines[i])
-        i += 1
-    if not replaced:
-        if out and out[-1].strip():
-            out.append("")
-        out.extend(block_lines)
-    path.write_text("\n".join(out).rstrip("\n") + "\n")
-    print(f"Updated {path} (Host agent-container)")
-    return path
+def write_ssh_config(cloud_ip=None):
+    """Overwrite the whole ssh_config from the template. With a cloud_ip, point
+    the cloud alias at it; without one (the ./up docker case) keep whatever
+    cloud IP is already on disk, falling back to 0.0.0.0 when there's no file."""
+    if cloud_ip is None:
+        cloud_ip = existing_cloud_ip() or "0.0.0.0"
+    SSH_CONFIG_PATH.write_text(SSH_CONFIG_TEMPLATE.format(cloud_ip=cloud_ip))
+    print(f"Wrote {SSH_CONFIG_PATH}")
+    return SSH_CONFIG_PATH
 
 
 def print_ready():
     print()
     print("Attach with:")
-    print("    herdr --remote agent-container")
+    print("    herdr --remote agent-container-cloud")
 
 
 def finish(ecs, ec2, cfg, task):
-    """Resolve the public IP, fix the SG rule, wait for SSH, point the
-    agent-container SSH alias at it, print the herdr line."""
+    """Resolve the public IP, fix the SG rule, wait for SSH, point the cloud
+    SSH alias at it, print the herdr line."""
     eni = eni_of_task(task)
     if not eni:
         sys.exit("Could not find the task's ENI; cannot resolve its public IP.")
     ip = public_ip_of_eni(ec2, eni)
     reconcile_sg(ec2, cfg["ssh_security_group_id"], cfg["_cidr"])
-    update_ssh_config(render_ssh_block("cloud", ip))
+    write_ssh_config(ip)
     if not wait_port(ip):
         print(f"Task is RUNNING at {ip}, but port 22 did not open in time.")
         print("Check the container logs in CloudWatch group:", cfg["log_group_name"])

@@ -9,5 +9,10 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.40"
     }
+    # Renders .up.toml on the local filesystem (see config.tf).
+    local = {
+      source  = "hashicorp/local"
+      version = ">= 2.4"
+    }
   }
 }

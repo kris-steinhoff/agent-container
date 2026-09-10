@@ -18,47 +18,56 @@ back. The task's public IP changes each start, so `./up cloud` resolves it and
 writes it into the cloud alias; the persisted EFS host keys keep the host key
 stable, so `herdr --remote agent-container-cloud` works like the local setup.
 
-Config comes from `terraform -chdir=terraform output -json`; each value is also
-overridable by the AGENT_* env var named in CONFIG_ENV below. Region is
-AWS_REGION else us-east-2.
+Cloud config is read from `.up.toml`, which `terraform apply` in ./terraform
+renders — `./up cloud` never shells out to terraform (or needs it installed).
+Change config by editing terraform/terraform.tfvars and re-running apply. Each
+key can still be overridden by the AGENT_* env var in CONFIG_ENV below, a rarely
+needed escape hatch.
 """
 
 import argparse
 import base64
-import json
 import os
 import re
 import socket
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 STARTED_BY = "up-cloud"  # tags the task so this script can find "the" one
-DEFAULT_REGION = "us-east-2"
+UP_TOML = REPO / ".up.toml"
+IMPLICIT_PROFILE = "agent-container"  # profile name tried when nothing else is set
 
-# Terraform output name -> env var that overrides it (so you can drive ./up
-# cloud without Terraform on PATH once you know the values).
+# .up.toml key -> AGENT_* env var that overrides it. Escape hatch for pointing
+# ./up cloud at a hand-built stack, or a value terraform hasn't re-rendered yet.
 CONFIG_ENV = {
+    "region": "AGENT_REGION",
     "cluster_arn": "AGENT_CLUSTER_ARN",
     "task_definition_family": "AGENT_TASK_DEFINITION_FAMILY",
     "task_security_group_id": "AGENT_TASK_SG_ID",
     "ssh_security_group_id": "AGENT_SSH_SG_ID",
     "subnet_id": "AGENT_SUBNET_ID",
     "log_group_name": "AGENT_LOG_GROUP",
+    "ecr_repository_url": "AGENT_ECR_REPOSITORY_URL",
+    "aws_profile": "AGENT_AWS_PROFILE",
 }
+
+# Keys ./up cloud can't run without (ecr_repository_url is only needed for
+# --build, so it's checked there instead).
+REQUIRED_KEYS = (
+    "region", "cluster_arn", "task_definition_family", "subnet_id",
+    "task_security_group_id", "ssh_security_group_id", "log_group_name",
+)
 
 
 def run(cmd, **kwargs):
     """Run a command, echoing it first so the script stays legible."""
     print("+ " + " ".join(cmd))
     return subprocess.run(cmd, check=True, **kwargs)
-
-
-def region():
-    return os.environ.get("AWS_REGION") or DEFAULT_REGION
 
 
 # ---------------------------------------------------------------------------
@@ -84,49 +93,80 @@ def cmd_docker(args):
 
 
 # ---------------------------------------------------------------------------
-# Cloud config.
+# Cloud config: .up.toml (rendered by `terraform apply`) + AGENT_* overrides.
 # ---------------------------------------------------------------------------
-def terraform_outputs():
-    env = os.environ.copy()
-    if os.environ.get("AGENT_SUBNET_ID"):
-        env["TF_VAR_subnet_id"] = os.environ["AGENT_SUBNET_ID"]
-    try:
-        proc = subprocess.run(
-            ["terraform", f"-chdir={REPO / 'terraform'}", "output", "-json"],
-            check=True, capture_output=True, text=True, env=env,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        detail = (getattr(exc, "stderr", "") or str(exc)).strip()
-        print(f"terraform output unavailable ({detail}); relying on AGENT_* env overrides.",
-              file=sys.stderr)
-        return {}
-    data = json.loads(proc.stdout or "{}")
-    return {name: entry.get("value") for name, entry in data.items()}
-
-
 def load_config():
-    outs = terraform_outputs()
-    cfg = {}
-    missing = []
+    if not UP_TOML.exists():
+        sys.exit(f"{UP_TOML.name} not found — run `terraform -chdir=terraform apply` "
+                 "first (it generates .up.toml).")
+    with UP_TOML.open("rb") as fh:
+        cfg = tomllib.load(fh)
     for key, envvar in CONFIG_ENV.items():
-        val = os.environ.get(envvar) or outs.get(key)
-        cfg[key] = val
-        if not val:
-            missing.append(f"{key} (${envvar})")
+        override = os.environ.get(envvar)
+        if override:
+            cfg[key] = override
+    missing = [k for k in REQUIRED_KEYS if not cfg.get(k)]
     if missing:
-        sys.exit("Missing required config: " + ", ".join(missing) +
-                 "\nRun `terraform -chdir=terraform apply` first, or set the env overrides.")
-    # Only needed for --build; don't hard-require it for a plain start.
-    cfg["ecr_repository_url"] = (
-        os.environ.get("AGENT_ECR_REPOSITORY_URL") or outs.get("ecr_repository_url")
-    )
+        sys.exit(f"{UP_TOML.name} is missing keys: {', '.join(missing)}. "
+                 "Re-run `terraform -chdir=terraform apply`.")
     return cfg
 
 
-def clients():
+def resolve_profile(args, cfg):
+    """AWS profile for `./up cloud`, first of these that's set:
+      1. --profile NAME
+      2. AWS_PROFILE already in the environment
+      3. .up.toml `aws_profile` (AGENT_AWS_PROFILE overrides that key)
+      4. the literal "agent-container", only if that profile exists
+      5. otherwise ambient credentials (AWS_PROFILE left unset)
+    An explicitly named profile (1 or 3) that doesn't exist is fatal; the
+    implicit default (4) just falls through to ambient."""
+    import botocore.session
+    available = set(botocore.session.Session().available_profiles)
+
+    if args.profile:
+        if args.profile not in available:
+            sys.exit(f"AWS profile {args.profile!r} (--profile) not found in ~/.aws.")
+        return args.profile
+
+    if os.environ.get("AWS_PROFILE"):
+        return os.environ["AWS_PROFILE"]
+
+    named = (cfg.get("aws_profile") or "").strip()
+    if named:
+        if named not in available:
+            sys.exit(f"AWS profile {named!r} (.up.toml / AGENT_AWS_PROFILE) not found in ~/.aws.")
+        return named
+
+    return IMPLICIT_PROFILE if IMPLICIT_PROFILE in available else None
+
+
+def clients(cfg):
     import boto3
-    reg = region()
+    reg = cfg["region"]
     return boto3.client("ecs", region_name=reg), boto3.client("ec2", region_name=reg)
+
+
+# ClientError codes that mean "your credentials are stale", not "you lack access".
+AWS_REAUTH_ERROR_CODES = {
+    "ExpiredToken", "ExpiredTokenException", "RequestExpired",
+    "InvalidClientTokenId", "UnrecognizedClientException",
+}
+
+
+def is_aws_reauth_error(exc):
+    """True if exc is botocore telling us the session is expired / invalid and
+    the fix is `aws login` — as opposed to a permissions or resource error."""
+    from botocore import exceptions as be
+    names = ("LoginRefreshRequired", "LoginRequiredError", "TokenRetrievalError",
+             "SSOTokenLoadError", "UnauthorizedSSOTokenError", "NoCredentialsError",
+             "CredentialRetrievalError")
+    reauth_types = tuple(t for t in (getattr(be, n, None) for n in names) if t)
+    if isinstance(exc, reauth_types):
+        return True
+    if isinstance(exc, be.ClientError):
+        return exc.response.get("Error", {}).get("Code") in AWS_REAUTH_ERROR_CODES
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +305,7 @@ def build_and_push(cfg):
     import boto3
     registry = repo.split("/")[0]
     print("Logging in to ECR...")
-    token = boto3.client("ecr", region_name=region()).get_authorization_token()
+    token = boto3.client("ecr", region_name=cfg["region"]).get_authorization_token()
     raw = token["authorizationData"][0]["authorizationToken"]
     user, password = base64.b64decode(raw).decode().split(":", 1)
     subprocess.run(["docker", "login", "--username", user, "--password-stdin", registry],
@@ -349,7 +389,18 @@ def finish(ecs, ec2, cfg, task):
 # ---------------------------------------------------------------------------
 def cmd_cloud(args):
     cfg = load_config()
-    ecs, ec2 = clients()
+
+    # Select the profile before the first boto3 client is created.
+    profile = resolve_profile(args, cfg)
+    if profile:
+        os.environ["AWS_PROFILE"] = profile
+
+    import boto3
+    sts = boto3.client("sts", region_name=cfg["region"])
+    ident = sts.get_caller_identity()
+    print(f'Acting as: {ident["Arn"]}  (profile: {profile or "ambient"})')
+
+    ecs, ec2 = clients(cfg)
     cluster = cfg["cluster_arn"]
 
     if args.stop:
@@ -416,12 +467,20 @@ def main():
                    help="Build the arm64 image, push to ECR, then restart. Implies --restart.")
     c.add_argument("--stop", action="store_true", help="Stop the running task and exit (scale to zero).")
     c.add_argument("--cidr", help="CIDR allowed to reach port 22 (default: your public IP /32).")
+    c.add_argument("--profile", help="AWS profile to use (default: AWS_PROFILE, else .up.toml aws_profile, "
+                                     "else 'agent-container' if it exists).")
     c.set_defaults(func=cmd_cloud)
 
     args = parser.parse_args()
     if args.target is None:
         args = parser.parse_args(["docker"])  # `./up` == `./up docker`
-    args.func(args)
+    try:
+        args.func(args)
+    except Exception as exc:  # noqa: BLE001 - narrowed immediately below
+        if is_aws_reauth_error(exc):
+            sys.exit(f"\nAWS session expired or invalid ({type(exc).__name__}).\n"
+                     "Run  aws login  and retry.\n")
+        raise
 
 
 if __name__ == "__main__":

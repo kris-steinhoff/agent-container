@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars and edit. `terraform apply` reads it and renders
+# ../.up.toml, which `./up cloud` consumes. terraform.tfvars is gitignored;
+# this .example stays tracked. Every line below is optional — an empty
+# terraform.tfvars applies fine on the defaults shown.
+
+# AWS region for the whole stack. Default: "us-east-2".
+# region = "us-east-2"
+
+# Public subnet for the task and EFS mount target; its AZ is pinned from
+# whatever you give (or from the default subnet). Empty = the default VPC's
+# default subnet. Default: "".
+# subnet_id = "subnet-0123456789abcdef0"
+
+# ~/.aws/config profile `./up cloud` selects (rendered into .up.toml; Terraform
+# ignores it). Empty = up tries an "agent-container" profile, else ambient
+# credentials. Default: "".
+# aws_profile = "agent-container"
+
+# Principal ARNs allowed to assume the agent-container-operator role. Empty =
+# trust the account root, deferring the decision to caller-side IAM policies.
+# Default: [].
+# operator_trusted_principals = ["arn:aws:iam::123456789012:user/you"]
+
+# Require MFA on the operator role's assume-role call (later hardening pass).
+# Default: false.
+# operator_require_mfa = false

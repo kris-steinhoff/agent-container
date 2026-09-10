@@ -1,9 +1,14 @@
 .envrc
 .env
+__pycache__/
 /authorized_keys
 /certs/*
 # Generated and owned by ./up (Include'd from ~/.ssh/config).
 /ssh_config
+# Rendered by `terraform apply`, read by ./up cloud.
+/.up.toml
+# Local Terraform var file (terraform.tfvars.example stays tracked).
+/terraform/terraform.tfvars
 
 /docker-compose.local.yml
 /agent_scratch/

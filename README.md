@@ -204,15 +204,18 @@ Why a bare task and not an ECS Service: a Service would keep something running (
 
 ### One-time setup
 
-Everything AWS-side is Terraform in `terraform/`:
+Everything AWS-side is Terraform in `terraform/`. Start from the tracked example var file, edit it if you need to (every value has a default, so an untouched copy is fine), then apply with **admin credentials** — `terraform apply` needs IAM/infra permissions the operator role below deliberately lacks:
 
 ```sh
 cd terraform
+cp terraform.tfvars.example terraform.tfvars   # edit region / subnet / aws_profile if wanted
 terraform init
 terraform apply
 ```
 
-That creates the ECR repo, the EFS filesystem + access point, the ECS cluster, task definition, IAM roles, the two security groups, the CloudWatch log group, and an SSM parameter for your authorized key. Put your public key into that parameter (it's created with a placeholder, and Terraform ignores its value afterward so it never lands in state):
+That creates the ECR repo, the EFS filesystem + access point, the ECS cluster, task definition, IAM roles (including the scoped operator role, below), the two security groups, the CloudWatch log group, and an SSM parameter for your authorized key. It also renders `.up.toml` at the repo root — the single config file `./up cloud` reads (it never shells out to terraform).
+
+Put your public key into the SSM parameter (created with a placeholder; Terraform ignores its value afterward so it never lands in state):
 
 ```sh
 aws ssm put-parameter --name /agent-container/authorized_keys --type String \
@@ -234,29 +237,39 @@ No SSH-config editing to do — you already `Include` the project-root `ssh_conf
 ./up cloud
 ```
 
-Starts the task if it's stopped (or reconnects you if it's already up), resolves its public IP and writes it into the `agent-container-cloud` alias in `ssh_config`, opens port 22 to your current public IP, waits for SSH, and prints the `herdr --remote agent-container-cloud` line. Then attach as usual. The box shuts itself down after ~30 minutes with no herdr agent running and nobody SSH'd in; run `./up cloud` again to restart it (a fresh task — the in-container herdr server is gone, but everything in `/home/agent` is still on EFS, so `herdr --remote` reinstalls and reconnects).
+It first prints an `Acting as: <arn>  (profile: …)` line so you can see which identity it's using (see the operator role below). Then it starts the task if it's stopped (or reconnects you if it's already up), resolves its public IP and writes it into the `agent-container-cloud` alias in `ssh_config`, opens port 22 to your current public IP, waits for SSH, and prints the `herdr --remote agent-container-cloud` line. Then attach as usual. The box shuts itself down after ~30 minutes with no herdr agent running and nobody SSH'd in; run `./up cloud` again to restart it (a fresh task — the in-container herdr server is gone, but everything in `/home/agent` is still on EFS, so `herdr --remote` reinstalls and reconnects).
 
 - `./up cloud --restart` stops the running task and launches a fresh one. This kills the in-container herdr server, so any live agents go with it.
 - `./up cloud --build` rebuilds the arm64 image, pushes it to ECR, then restarts onto it. Implies `--restart`.
 - `./up cloud --stop` stops the task now (scale to zero on demand).
 - `./up cloud --cidr 203.0.113.0/24` opens port 22 to a specific CIDR instead of your detected `/32`.
+- `./up cloud --profile NAME` picks a specific AWS profile for this run.
 
 Each `./up cloud` rewrites the SSH security group so port 22 is open only to your current IP — no standing world-open rule.
 
 ### Configuration
 
-- `AWS_REGION` — region for `./up cloud`'s API calls (default `us-east-2`). Terraform pins the same default via `var.region`; set `TF_VAR_region` to match if you change it.
-- `AGENT_SUBNET_ID` — pin the task to a specific public subnet. `./up` forwards it to Terraform as `TF_VAR_subnet_id`. Left unset, Terraform uses the default VPC's default subnet.
+The model is: **you edit `terraform/terraform.tfvars`, `terraform apply` renders `.up.toml`, and `./up cloud` reads only `.up.toml`.** Changing a config value is a one-line tfvars edit plus `terraform apply` — fast, and no infrastructure churn for `region` / `subnet_id` / `aws_profile` (they only re-render the file). `.up.toml` and `terraform.tfvars` are both gitignored; `terraform.tfvars.example` documents every input.
+
+- `region` (tfvars) — AWS region for the whole stack and for `./up cloud`'s API calls. Default `us-east-2`.
+- `subnet_id` (tfvars) — pin the task and EFS mount target to a specific public subnet. Empty uses the default VPC's default subnet.
+- `aws_profile` (tfvars) — the `~/.aws/config` profile `./up cloud` should select (see the operator role below). Empty means `./up cloud` tries an `agent-container` profile if one exists, else ambient credentials.
 - The idle-shutdown thresholds, all set on the task and overridable in the task definition's environment: `IDLE_TIMEOUT` (default 1800s — how long idle must hold before it stops), `STARTUP_GRACE` (default 1200s — never stop within this of boot), `MAX_LIFETIME` (default 43200s — hard cap, stop regardless), `IDLE_POLL_INTERVAL` (default 120s).
-- Each Terraform output also has an `AGENT_*` env override (`AGENT_CLUSTER_ARN`, `AGENT_TASK_DEFINITION_FAMILY`, `AGENT_ECR_REPOSITORY_URL`, `AGENT_TASK_SG_ID`, `AGENT_SSH_SG_ID`, `AGENT_SUBNET_ID`, `AGENT_LOG_GROUP`), so you can drive `./up cloud` without Terraform on PATH once you know the values.
+- Rarely needed escape hatches: each `.up.toml` value has an `AGENT_*` env override — `AGENT_REGION`, `AGENT_CLUSTER_ARN`, `AGENT_TASK_DEFINITION_FAMILY`, `AGENT_ECR_REPOSITORY_URL`, `AGENT_TASK_SG_ID`, `AGENT_SSH_SG_ID`, `AGENT_SUBNET_ID`, `AGENT_LOG_GROUP`, `AGENT_AWS_PROFILE` — for pointing `./up cloud` at a hand-built stack or a value `terraform apply` hasn't re-rendered.
 
 ### IAM: operator role
 
 `terraform apply` creates an `agent-container-operator` role scoped to exactly the AWS calls `./up cloud` makes at runtime — find/launch/stop the task, resolve its ENI's public IP, reconcile the one SSH ingress rule, read/write the `authorized_keys` parameter, tail the container's logs, and (for `--build`) push to ECR. Everything's locked to `var.region`. The idea is that everyday use runs under this role instead of your admin credentials.
 
-The role has **no infrastructure permissions by design** — it can't touch the Terraform-managed resources. `terraform apply` and any other infra change keep running under your normal admin credentials; only `./up cloud` uses the operator role.
+The role has **no infrastructure permissions by design** — it can't touch the Terraform-managed resources. That's the split: inside `terraform/` you use admin credentials (apply creates IAM roles, security groups, EFS — permissions the operator role doesn't have); everywhere else, `./up` handles auth and runs under the operator role.
 
-Minimal wiring: add a profile to `~/.aws/config` pointing at the role ARN (`terraform -chdir=terraform output -raw operator_role_arn`), with a `source_profile` (or `sso_session`) that holds credentials allowed to assume it:
+Minimal wiring — do this once. Get the role ARN:
+
+```sh
+terraform -chdir=terraform output -raw operator_role_arn
+```
+
+Add a profile to `~/.aws/config` that assumes it, with a `source_profile` (or `sso_session`) holding credentials allowed to assume it — paste the ARN in, an ini file can't run a command substitution:
 
 ```ini
 [profile agent-container]
@@ -265,7 +278,9 @@ source_profile = default
 region         = us-east-2
 ```
 
-Then `AWS_PROFILE=agent-container ./up cloud` — boto3 does the assume-role transparently, no code change. (Fuller auth ergonomics are a later pass.)
+Now set `aws_profile = "agent-container"` in `terraform/terraform.tfvars` and re-run `terraform apply` (it just re-renders `.up.toml`). From then on a bare `./up cloud` selects that profile itself — no `AWS_PROFILE=` prefix — and boto3 does the assume-role transparently. `./up cloud` prints the resolved identity as its first line. (`--profile NAME`, an `AWS_PROFILE` already in your environment, and `AGENT_AWS_PROFILE` all override the tfvars value; fuller auth ergonomics are a later pass.)
+
+For `terraform/` itself, if you use [direnv](https://direnv.net/) a one-line nested `terraform/.envrc` (`export AWS_PROFILE=admin`) keeps admin credentials scoped to that directory while `./up` at the repo root uses the operator profile.
 
 The trust policy defaults to trusting the account root, which defers the real "who can assume this" decision to identity-based policies on the caller side. Two variables tighten it when you're ready: `operator_trusted_principals` (a list of principal ARNs — set it to your IAM user or Identity Center role to trust only them) and `operator_require_mfa` (adds an `aws:MultiFactorAuthPresent` condition; off for now, part of the later hardening pass).
 

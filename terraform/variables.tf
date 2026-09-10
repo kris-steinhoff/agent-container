@@ -40,6 +40,16 @@ variable "operator_require_mfa" {
   default     = false
 }
 
+# The ~/.aws/config profile `./up cloud` should select. Rendered into .up.toml
+# for the script to read; Terraform itself doesn't consume it. Empty -> `./up
+# cloud` falls back to an "agent-container" profile if one exists, else ambient
+# credentials.
+variable "aws_profile" {
+  description = "AWS profile name for ./up cloud to select (rendered into .up.toml)."
+  type        = string
+  default     = ""
+}
+
 # Fargate task size. 1 vCPU / 4 GB is a valid Fargate combination and enough
 # headroom for a coding agent plus a build or two.
 variable "task_cpu" {

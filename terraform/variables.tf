@@ -19,6 +19,27 @@ variable "subnet_id" {
   default     = ""
 }
 
+# Who may assume the operator role (see operator.tf). Left empty, the trust
+# policy falls back to the account root ARN, which delegates the actual
+# assume-role decision to identity-based policies on the caller side — a safe
+# default that lets you pick the real principal (an IAM user, an Identity
+# Center permission-set role) later without a Terraform change. Set this to one
+# or more principal ARNs to lock the trust down to exactly them.
+variable "operator_trusted_principals" {
+  description = "Principal ARNs allowed to assume agent-container-operator. Empty = trust the account root."
+  type        = list(string)
+  default     = []
+}
+
+# Require MFA on the operator role's assume-role call. Off for now — MFA is
+# part of a later account-hardening pass; flip it on once the trusted principal
+# is a real MFA-carrying identity.
+variable "operator_require_mfa" {
+  description = "Add an aws:MultiFactorAuthPresent=true condition to the operator role's trust policy."
+  type        = bool
+  default     = false
+}
+
 # Fargate task size. 1 vCPU / 4 GB is a valid Fargate combination and enough
 # headroom for a coding agent plus a build or two.
 variable "task_cpu" {

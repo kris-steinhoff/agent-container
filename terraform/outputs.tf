@@ -46,3 +46,8 @@ output "ssm_parameter_name" {
   description = "SSM parameter holding authorized_keys — put your public key here."
   value       = aws_ssm_parameter.authorized_keys.name
 }
+
+output "operator_role_arn" {
+  description = "Scoped role `./up cloud` assumes for runtime task control (no infrastructure permissions)."
+  value       = aws_iam_role.operator.arn
+}

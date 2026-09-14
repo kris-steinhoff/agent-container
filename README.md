@@ -254,7 +254,7 @@ The model is: **you edit `terraform/terraform.tfvars`, `terraform apply` renders
 - `region` (tfvars) — AWS region for the whole stack and for `./up cloud`'s API calls. Default `us-east-2`.
 - `subnet_id` (tfvars) — pin the task and EFS mount target to a specific public subnet. Empty uses the default VPC's default subnet.
 - `aws_profile` (tfvars) — the `~/.aws/config` profile `./up cloud` should select (see the operator role below). Empty means `./up cloud` tries an `agent-container` profile if one exists, else ambient credentials.
-- The idle-shutdown thresholds, all set on the task and overridable in the task definition's environment: `IDLE_TIMEOUT` (default 1800s — how long idle must hold before it stops), `STARTUP_GRACE` (default 1200s — never stop within this of boot), `MAX_LIFETIME` (default 43200s — hard cap, stop regardless), `IDLE_POLL_INTERVAL` (default 120s).
+- The idle-shutdown thresholds, all overridable via the task definition's environment: `IDLE_TIMEOUT` (default 129600s/36h — how long idle must hold before it stops), `STARTUP_GRACE` (default 1200s — never stop within this of boot), `IDLE_POLL_INTERVAL` (default 120s). There's no hard lifetime cap — a busy task can run indefinitely; only sustained idle (no active herdr agent and no established SSH) stops it.
 - Rarely needed escape hatches: each `.up.toml` value has an `AGENT_*` env override — `AGENT_REGION`, `AGENT_CLUSTER_ARN`, `AGENT_TASK_DEFINITION_FAMILY`, `AGENT_ECR_REPOSITORY_URL`, `AGENT_TASK_SG_ID`, `AGENT_SSH_SG_ID`, `AGENT_SUBNET_ID`, `AGENT_LOG_GROUP`, `AGENT_AWS_PROFILE` — for pointing `./up cloud` at a hand-built stack or a value `terraform apply` hasn't re-rendered.
 
 ### IAM: operator role

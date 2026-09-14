@@ -8,9 +8,8 @@ set -eu
 #
 # Idle == herdr reports no active agent AND no established inbound SSH. All the
 # thresholds below are overridable via the task definition's environment.
-IDLE_TIMEOUT="${IDLE_TIMEOUT:-1800}"        # idle must hold this long to trigger (30m)
+IDLE_TIMEOUT="${IDLE_TIMEOUT:-129600}"      # idle must hold this long to trigger (36h)
 STARTUP_GRACE="${STARTUP_GRACE:-1200}"      # never trigger within this of boot (20m)
-MAX_LIFETIME="${MAX_LIFETIME:-43200}"       # hard cap, stop regardless (12h)
 IDLE_POLL_INTERVAL="${IDLE_POLL_INTERVAL:-120}"
 
 log() {
@@ -20,7 +19,7 @@ log() {
 boot=$(date +%s)
 idle_since=""
 
-log "started (idle_timeout=${IDLE_TIMEOUT}s startup_grace=${STARTUP_GRACE}s max_lifetime=${MAX_LIFETIME}s poll=${IDLE_POLL_INTERVAL}s)"
+log "started (idle_timeout=${IDLE_TIMEOUT}s startup_grace=${STARTUP_GRACE}s poll=${IDLE_POLL_INTERVAL}s)"
 
 shutdown() {
     log "$1 — stopping herdr server and sshd, exiting 0"
@@ -50,10 +49,6 @@ ssh_conns() {
 while :; do
     now=$(date +%s)
     age=$((now - boot))
-
-    if [ "$age" -ge "$MAX_LIFETIME" ]; then
-        shutdown "max lifetime reached (${age}s >= ${MAX_LIFETIME}s)"
-    fi
 
     agents=$(running_agents)
     conns=$(ssh_conns)

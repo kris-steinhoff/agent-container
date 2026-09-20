@@ -199,7 +199,12 @@ ENV PATH="/home/agent/.local/bin:${PATH}"
 # prompting interactively. (On the cloud path the EFS mount is empty on first
 # boot and chezmoi runs from entrypoint.sh instead — see it for the equivalent.)
 RUN rm -f /home/agent/.zshrc
-RUN chezmoi init --apply kris-steinhoff/dotfiles
+# --promptDefaults makes every prompt*Once in the dotfiles' chezmoi.toml return
+# its default instead of trying to read a TTY (which doesn't exist during the
+# build and would fail with "could not open a new TTY"). It covers any prompt
+# the dotfiles add later, as long as they carry a default; entrypoint.sh passes
+# the same on the cloud path.
+RUN chezmoi init --apply --promptDefaults kris-steinhoff/dotfiles
 
 # The shared zshrc sources zsh-autosuggestions/zsh-syntax-highlighting only
 # behind a `type brew` guard, which never fires in this image — they come from

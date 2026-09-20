@@ -20,7 +20,10 @@ chown agent:agent /home/agent/.ssh
 # definition sets, and on a marker so it's a no-op on later boots. chezmoi owns
 # /home/agent; on an empty EFS mount it lays down the dotfiles here instead.
 if [ ! -f /home/agent/.seeded-cloud ] && [ -n "${SSHD_HOST_KEY_DIR:-}" ]; then
-    if su - agent -c 'chezmoi init --apply kris-steinhoff/dotfiles'; then
+    # --promptDefaults makes the dotfiles' prompt*Once functions return their
+    # defaults non-interactively (su -c has no TTY either); matches the
+    # Dockerfile's build-time invocation.
+    if su - agent -c 'chezmoi init --apply --promptDefaults kris-steinhoff/dotfiles'; then
         # The shared zshrc only sources zsh-autosuggestions/zsh-syntax-highlighting
         # behind a `type brew` guard that never fires here — they come from apt.
         # The Dockerfile appends this same block for the local path; do it here

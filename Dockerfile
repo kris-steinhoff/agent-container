@@ -30,6 +30,7 @@ RUN apt-get update \
         python3-venv \
         python3-pip \
         locales \
+        libicu76 \
         tini \
         tzdata \
     && rm -rf /var/lib/apt/lists/* \
